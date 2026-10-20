@@ -20,7 +20,7 @@
 | **HID** | Human Interface Device = 人机接口设备类。键盘/鼠标/手柄都走这个类。**HID IN** = 芯片→电脑(注入按键);**HID OUT** = 电脑→芯片(键盘灯状态回读) |
 | **CDC** | Communications Device Class = 通信设备类,表现为一个**虚拟串口**(Windows 里多出一个 COM3)。手机上"充电线转接头"就是它。本项目**不做**它(占 2 IN + 1 OUT 端点,且 COM 号会漂移) |
 | **TinyUSB** | 乐信维护的开源 USB 协议栈。本项目的描述符自写在这一层 |
-| **USB-Serial-JTAG** | 芯片 ROM 自带的 USB 串口(烧录/日志用)。与 TinyUSB 抢同一个原生 USB PHY → 应用一开 TinyUSB 它就没了。**与开发板的 UART0 物理口是两回事** |
+| **USB-Serial-JTAG** | 芯片 ROM 自带的 USB 串口(烧录用)。与 TinyUSB 抢同一个原生 USB PHY → 应用一开 TinyUSB 它就没了(按住 BOOT 进下载模式时 ROM 才接管)。**与开发板的 UART0 物理口是两回事** |
 | **描述符 descriptor** | USB 设备的"身份证",电脑靠它认出你是键盘还是 U 盘 |
 | **P4** | 乐信的 ESP32-P4:没有射频(不能连 WiFi)但 USB/显示/编解码更强。项目规划的**二代**硬件 |
 | **LT6911UXC / TC358743** | HDMI → MIPI-CSI 桥接芯片(P4 直采路线用,树莓派 HDMI-in 同款) |

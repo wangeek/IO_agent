@@ -46,6 +46,12 @@
 - 启动条件:**当且仅当**项目要从"自用工具"转为"批量部署的产品"时再打样;
   在此之前 T-Dongle S3 封装已足够,甚至可长期作为最终形态。
 - 日志策略:量产无第二口 → UART0 测试点留底 + 运行期日志走 WiFi 上报。
+- **救砖通道(2026-10-20 补,必须项)**:量产板没有 UART 口,固件跑死就无处下载。
+  → PCB **必须留 BOOT(GPIO0) 与 EN 两个测试点**,探针短接 + 复位即可强制进
+  ROM 下载模式救砖。
+  → 前提:**不能开 flash encryption / secure boot**(二者会禁用 ROM 的 USB-OTG 栈,
+  连同 UART 下载一起废掉,只剩 OTA)。量产顺序必须是"先验证 OTA 可用,再开加密"。
+  → 形态验证 dongle 板自带 BOOT 按钮(到货验收第 ① 条即依赖它),烧录没问题。
 
 ## 四、采购清单(2026-10-20 定稿)
 
@@ -137,7 +143,7 @@ https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/peri
 |---|---|---|---|
 | 开发 | DevKitC-1-N16R8(双 Type-C) | 原生 USB(按住 BOOT 走 ROM DFU)或 UART 口 | **UART0 物理口**(第二 Type-C,CH343) |
 | 形态验证 | ~60 元 dongle(单 USB-A 口) | 原生 USB ROM DFU | **WiFi 日志**(固件把 log 发到开发机 UDP 端口);次选:临时切 USB-CDC 单独看日志(会占满 OTG,此时枚举不出键鼠) |
-| 量产 | 自研板(无第二物理口) | **WiFi OTA** | **WiFi**;可选 vendor bulk 端点作产线测试口 |
+| 量产 | 自研板(无第二物理口) | **WiFi OTA**;救砖靠 BOOT+EN 测试点强制进下载模式 | **WiFi**;可选 vendor bulk 端点作产线测试口 |
 
 不要 CDC 的三条理由:
 
