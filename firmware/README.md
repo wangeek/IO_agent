@@ -14,8 +14,8 @@ idf.py create-project -p ../.. firmware   # 在 IO_agent 根目录执行
 | `usb/` | TinyUSB 描述符:复合设备 **HID 键盘/鼠标 + MSC**,自写不用 Arduino 便利库 |
 | `disk/` | PSRAM 内 FAT16 镜像(4-6MB 设计值)+ MSC 后端;预置脚本镜像 |
 | `hid/` | 注入序列执行器:本地定时执行,<10ms/步;`focus_reset` 宏(IME 归零→Win+M→Win+R) |
-| `net/` | WiFi 配网(Level 0 出厂预置 / Level 1 SoftAP 门户)、TLS(PSK)回传、帧编解码 |
-| `cfg/` | NVS 配置与设备凭据(wifi/agent 端点/token/uuid) |
+| `net/` | WiFi、mDNS 广播、TLS-PSK 服务端、HTTP 服务 |
+| `cfg/` | NVS 配置与设备凭据(WiFi 凭据 / PSK / watcher 拉起策略) |
 | `capability/` | 能力注册表:编译期开关 + 运行时查询,状态机只查"我现在有什么" |
 
 ## 不可绕的硬件约束(踩坑前先读)

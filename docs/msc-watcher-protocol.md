@@ -4,7 +4,7 @@
 > v2 Output 设计(`output-channel-design.md`)已证伪"ESP32 → 主机"方向的 MSC 数据流
 > (USB 主从架构 + FAT 缓存),回读链路改为"主机写 U 盘 → ESP32 本地读 → WiFi 上传"。
 > 本文的 CMD/RESP 文件约定、幂等键、超时参数仍可平移到 v2 的 `X:\CMD\ / X:\RESP\`
-> 与 L2 直连形态。以下原文仅存档。
+> 形态。以下原文仅存档。
 >
 > **两处再更新(2026-10-20 评审,见 `design-review.md`)**:
 > - **LED 通道退出主路径**:下面"LED ACK 序列"整节**已作废**——3-9 bit/s、

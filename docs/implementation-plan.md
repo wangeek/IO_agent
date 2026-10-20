@@ -23,24 +23,25 @@ IO_agent/
 │   ├── usb/                      TinyUSB 描述符:复合设备(HID 键盘/鼠标 + MSC)
 │   ├── disk/                     PSRAM FAT16 镜像 + MSC 后端
 │   ├── hid/                      注入序列执行器(本地定时,<10ms/步)
-│   ├── net/                      配置来源(A/B/C)、TLS 回传、帧编解码
-│   ├── cfg/                      NVS 配置与设备凭据
+│   ├── mcp/                      **MCP server**(Streamable HTTP + JSON-RPC 2.0)
+│   │                             工具:act / observe / watcher / device
+│   ├── net/                      WiFi、mDNS 广播、TLS-PSK、HTTP 服务
+│   ├── cfg/                      NVS 配置与设备凭据(WiFi 凭据 / PSK)
 │   └── capability/               能力注册表(编译期开关 + 运行时查询)
 ├── watcher/                      目标机侧(零安装,驻 RAM disk)
 │   ├── watch.ps1                 驻守主脚本
 │   ├── capture/                  采集抽象层(当前 GDI,后续可插拔 DXGI)
 │   └── assets/                   预置脚本与工具(打进固件分区或 RAM disk 镜像)
-└── agent/                        agent 侧
-    ├── mcp/                      MCP server(act / observe)
-    ├── uplink/                   设备绑定、鉴权、帧解码
-    └── storage/                  截图与响应入库
+└── host/                         宿主侧(你的 Mac/服务器)
+    ├── client/                   MCP 客户端与联调工具(发现 / 配对 / 取帧)
+    └── adapter/                  选做:设备端 MCP 做不到时的薄协议转换器
 ```
 
 约定:
 
 - 固件端**只搬运,不解析内容**(哑设备原则,N2 延续)。
 - watcher 端**有像素,所以 diff/ROI 在这里算**(N1/N2 延续)。
-- 所有跨端契约(帧格式、盘上文件名、错误码)以本文 §四 为准,改一处必须同步四处。
+- 所有跨端契约(MCP 协议、盘上文件名、错误码)以本文 §四 为准,改一处必须同步四处。
 
 ## 二、里程碑
 
@@ -63,18 +64,22 @@ IO_agent/
 - 盘符自扫(不假设 X:);`SNAP_P`/`SNAP_A` + `SNAP.IDX` 双缓冲防撕裂;
   `CMD\` / `RESP\` 命令与响应;幂等键沿用 v1 约定。
 - **进程自检退出**:写盘失败(盘消失)即判定载体丢失 → 主动退出,不残留。
-- 验收:拔盘 5s 内进程自行退出;连续 5fps 取帧 10 分钟,无花屏帧入库。
+- 验收:拔盘 5s 内进程自行退出;连续 2fps 取帧 10 分钟,无花屏帧入库。
 
-### M4 回传链路
-- 配置来源三选一:A 目标机代取(目标机有外网,主路径)/ B 人工投送配置文件 / C SoftAP+手机(异地分发才做)。
-- TLS(PSK)回传、帧编解码、agent 端绑定与鉴权。
-- 验收:插入 → 无人工 → **10s 内 agent 侧收到第一张桌面截图**;
+### M4 连接链路(设备即服务端)
+- 设备起 WiFi + mDNS 广播(`_ioagent._tcp.local`);凭据预置(NVS)或 SoftAP 配置。
+- 设备端 TLS-PSK 服务端 + 配对流程(一次性配对码 → PSK)。
+- host 侧 MCP 客户端:发现设备 → 配对 → 调 `observe` 取帧。
+- 验收:插入 → 无人工 → **10s 内 host 侧拿到第一张桌面截图**;
   稳定态随机 20 次全屏截图全部 ≤1s、成功率 100%。
 
-### M5 MCP 面
-- `act(sequence)` / `observe(opts)`;ROI 与 diff 清单透传;`file`/`exec` 留接口。
+### M5 MCP 面(跑在设备上)
+- 设备端 MCP server(Streamable HTTP + JSON-RPC 2.0),工具仅 4 个:
+  `act` / `observe` / `watcher(start\|stop\|status)` / `device(info)`。
+- `observe` 支持 `max_age_ms`:等 `SNAP.IDX` 序号前进再取帧(保证新鲜度)。
+- 帧用 `resources/read` 的 blob 返回(不 base64);ROI 与 diff 清单透传。
 - 状态诚实:observe 三态(正常帧/无信号/黑帧)+ `secure_desktop`,不误报。
-- 验收:`act → observe(diff) → 决策` 闭环全链无人工、无 agent 侧对目标机的软件依赖。
+- 验收:`act → observe(diff) → 决策` 闭环全链无人工、无 host 侧对目标机的软件依赖。
 
 ### M6 形态与边界
 - 形态验证板(USB-A 直插)完成三合一枚举、机箱后面板供电、天线遮挡实测。
@@ -87,7 +92,7 @@ IO_agent/
 |---|---|---|
 | 1 | **采集走 GDI(CopyFromScreen),游戏/独占全屏后置** | watcher 的采集封装为 `capture` 抽象层,当前实现 GDI;DXGI Desktop Duplication 后续插入同一接口,不动协议与固件。文档如实标注"真独占全屏可能黑帧"为已知边界 |
 | 2 | **分层快照,带宽按变化量收敛** | 见 §四.2 文件与帧率约定;USB 写入稳态 <300KB/s,CMD/RESP 不被饿死 |
-| 3 | **配置来源三选一 + 运行时分级回传** | 见 connectivity-and-binding.md §三;主路径 A(目标机代取配置),B/C 为退路 |
+| 3 | **拓扑反转:设备即 MCP 服务端** | 见 connectivity-and-binding.md v3;agent 主动连设备、mDNS 发现、TLS-PSK 双向鉴权;原"双路回传"与"目标机代取配置"作废 |
 | 4 | **LED 通道退出主路径** | Stage 0 不以 LED 成功为前提;LED 仅作可选调试/心跳;v1 协议文档中 LED 段落标记作废 |
 | 5 | **拔盘无残留靠显式自检,不靠"自然退出"** | watch.ps1 写盘失败即退出;验收清单加入"无残留进程" |
 | 6 | **安全基线平移进实施清单** | op 白名单 / type ≤256B / 鼠标 clamp ±127 / 键盘基线恢复 / 检测到人动键盘即中止 —— 写进 M3 验收条目 |

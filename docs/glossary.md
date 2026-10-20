@@ -30,10 +30,10 @@
 |---|---|---|
 | **L0** | 硬件直采 | 二代路线:目标机 HDMI 输出 → 桥接芯片 → P4 采像素 → WiFi 发回。**目标机完全不参与**。远期 |
 | **L1** | U 盘驻守脚本 | **默认路线**:目标机上临时跑一个 PowerShell 脚本(藏在 U 盘里,不安装不落盘),脚本截图写进 U 盘,ESP32 读走再经 WiFi 上传 |
-| **L2** | 目标机有网直连 | 目标机自己有外网时,脚本**跳过 U 盘和 ESP32 中转**,直接把结果推给 agent。控制面(按键注入)仍然走 HID |
+| **L2** | 目标机有网直连 | 原设计:目标机有外网时脚本跳过 U 盘与 ESP32 直接推给 agent。**已作废**——拓扑反转为 agent 主动连设备,不再有"设备推数据"这条路 |
 
-三者关系:L0 远期硬件路线;L1 是默认且必有的;L2 是 L1 的**加速分支**(不是替代)。
-agent 侧要同时接受 L1 与 L2 两个来源,用设备 UUID 区分。
+三者关系:L0 远期硬件路线;L1 是默认且必有的;L2 已作废。
+**现行通路只有一条**:agent ──WiFi/MCP──▶ 设备 ──HID / RAM disk──▶ 目标机。
 
 ## 三、Agent 侧概念
 
@@ -64,7 +64,20 @@ agent 侧要同时接受 L1 与 L2 两个来源,用设备 UUID 区分。
 | **GDI / CopyFromScreen** | 老一代 Windows 绘图接口及其"截当前屏幕"函数。**拍不到真独占全屏**(DirectDraw 老游戏黑屏) |
 | **WMIC / Get-Volume** | Windows 命令行里读磁盘信息(尤其卷序列号)的工具 |
 
-## 五、编号约定
+## 五、MCP 与协议
+
+| 术语 | 人话 |
+|---|---|
+| **MCP** | Model Context Protocol,让 AI agent 调用外部工具的开放协议。本项目由**设备端**实现 MCP server |
+| **JSON-RPC 2.0** | MCP 底层用的消息格式:一个 JSON 对象表示一次请求/响应 |
+| **Streamable HTTP** | MCP 当前的推荐传输:单个 HTTP 端点,POST 进请求、可回 SSE 流。MCU 上比老式 SSE 双通道省 |
+| **SSE** | Server-Sent Events,服务端单向推流的老传输方式 |
+| **blob** | MCP 里表示二进制资源的方式(裸字节)。传 300KB 帧用 blob,不要 base64 塞进 JSON(会膨胀 33%) |
+| **mDNS** | 局域网自动发现:设备广播 `_ioagent._tcp.local`,客户端扫到即知地址,不用配 IP |
+| **PSK** | Pre-Shared Key,预共享密钥。TLS-PSK 双方持同一把密钥 → 天然双向认证,免证书链 |
+| **配对码** | 一次性短码,用来把"这台设备"和"这个 agent"绑在一起,换取长期 PSK |
+
+## 六、编号约定
 
 - **N1–N7**:agent 接口层的需求裁定编号,见 `agent-interface-mcp.md` §三。
 - **M0–M6**:实施里程碑编号,见 `implementation-plan.md` §二。
