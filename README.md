@@ -44,7 +44,7 @@
 - `docs/glossary.md` — **术语表**(读其它文档前先扫一眼)
 - `docs/agent-interface-mcp.md` — **Agent 接口层:手眼模型**(act/observe 原语、N1-N7 裁定、UAC 补充、采集方式定案)
 - `docs/output-channel-design.md` — Output 通道设计 v2(三层架构、延迟预算、屏幕即接口模式)
-- `docs/connectivity-and-binding.md` — **配网、绑定与回传**(两级配网、运行时分级回传、传输安全、产线约束)
+- `docs/connectivity-and-binding.md` — **配网、绑定与回传**(配置来源三选一、运行时分级回传、传输安全、产线约束)
 - `docs/hardware-selection.md` — 硬件选型与形态(N16R8 锁定、三阶段板形、供电/天线/日志策略)
 - `docs/implementation-plan.md` — **实施计划**(仓库骨架、里程碑、契约冻结清单)
 - `docs/design-review.md` — 2026-10-20 设计评审:7 条发现与定案结论
