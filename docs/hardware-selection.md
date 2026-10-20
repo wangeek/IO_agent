@@ -120,6 +120,8 @@ https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/peri
 - **富余端点的正确用法**:塞一个 **vendor bulk 接口(1 IN + 1 OUT)**——Windows 绑 WinUSB、
   浏览器可 WebUSB 免驱。量产板没有第二个物理口(日志走 WiFi),这条正好当**产线测试/设备调试口**。
 - **MCP 的 HTTP 端点**:只需 1 个(Streamable HTTP 单端点),不占 USB 端点、无预算问题。
+- **键鼠合并(A′)正是本项目的选择**:键盘与鼠标都要,放进同一个 HID 接口用 Report ID 区分,
+  端点消耗与只做键盘完全相同 → 鼠标是"免费"的。详见 `agent-interface-mcp.md` §四.5。
 
 ### 调试通道:用哪个(不占原生 USB 端点)
 
