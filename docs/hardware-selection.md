@@ -31,7 +31,8 @@
   插上目标机即完成真实场景验证——机箱后面板供电、天线遮挡、Windows 枚举
   键鼠+U盘三合一。小屏可当状态指示(连接/执行/告警),对运维场景有产品价值。
 - 备选:Waveshare ESP32-S3-Zero(~30 元,超小,但母口需转接,不推荐做 dongle)。
-- 注意:T-Dongle 无第二 USB 口,日志需 UART0 引出或临时切 USB-CDC(会占 OTG)。
+- 注意:T-Dongle 无第二 USB 口 → 日志走 **WiFi**(固件发 UDP 到开发机),
+  不引 UART0(要额外买 USB-TTL),也不切 USB-CDC(会占满 OTG,枚举不出键鼠)。
 
 ### 阶段 3:产品——自研板(远期可选,当前不启动)
 
@@ -120,11 +121,41 @@ https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/peri
   浏览器可 WebUSB 免驱。量产板没有第二个物理口(日志走 WiFi),这条正好当**产线测试/设备调试口**。
 - **MCP 的 HTTP 端点**:只需 1 个(Streamable HTTP 单端点),不占 USB 端点、无预算问题。
 
+### 调试通道:用哪个(不占原生 USB 端点)
+
+先分清两种"串口":
+
+- **UART0 物理引脚**(GPIO43/44)→ 开发板自带 CH343 芯片 → 板上的**第二个 Type-C 口**。
+  这条链路与 S3 的原生 USB 控制器**完全无关**,不占任何 USB 端点。
+- **USB CDC 虚拟串口**:跑在原生 USB 口上,电脑里出现 COM 口 → **要占 2 IN + 1 OUT**。
+
+**结论:不做 USB CDC。**
+
+| 阶段 | 板子 | 烧录 | 运行时日志 |
+|---|---|---|---|
+| 开发 | DevKitC-1-N16R8(双 Type-C) | 原生 USB(按住 BOOT 走 ROM DFU)或 UART 口 | **UART0 物理口**(第二 Type-C,CH343) |
+| 形态验证 | ~60 元 dongle(单 USB-A 口) | 原生 USB ROM DFU | **WiFi 日志**(固件把 log 发到开发机 UDP 端口);次选:临时切 USB-CDC 单独看日志(会占满 OTG,此时枚举不出键鼠) |
+| 量产 | 自研板(无第二物理口) | **WiFi OTA** | **WiFi**;可选 vendor bulk 端点作产线测试口 |
+
+不要 CDC 的三条理由:
+
+1. 开发期日志本来就有 UART0 物理通道,**零端点成本**;
+2. 量产板与形态验证板都没有第二个物理口,日志走 WiFi(已定),不需要 USB 通道;
+3. 做完 CDC 端点归零,换来的却是一个**端口号不稳定的 COM 口**(Windows 对无 INF
+   绑定的 CDC 设备按可用编号分配,换个 USB 口插 COM 号就变,自动化脚本的经典坑)
+   ——省下 3 个端点反而能换来更稳的 vendor bulk 调试口。
+
+> **易混点澄清**:README 硬约束里"启用 HID 后原生串口调试口消失"指的是
+> **芯片 ROM 的 USB-Serial-JTAG**(与 TinyUSB 抢同一个原生 USB PHY),
+> 与开发板的 UART0 物理口无关——那条链路始终可用。
+
 ## 四、决策摘要
 
 1. **芯片配置锁定 N16R8**,所有阶段统一,固件无缝迁移。
 5. **端点分配走 A′**(单 HID 接口 + 复合报告描述符,不要 HID OUT),富余 2 个端点
    留给 vendor 调试口;若实测 Windows 侧要求键鼠独立枚举,再切 B(富余归零)。
+6. **不做 USB CDC 虚拟串口**:开发日志走 UART0 物理口,量产/形态验证走 WiFi 日志。
+   省下 3 个端点,避开 COM 号漂移的坑。
 2. RAM disk 设计值改 4-6MB(PSRAM 预算决定),协议文档中 32MB 仅为 FAT16 上限。
 3. 原型开发用 DevKitC;形态实况验证用 ~60 元通用 dongle(N16R8),替代 T-Dongle。
 4. 自研板等 L1 链路跑通后再启动打样。
