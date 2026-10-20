@@ -93,9 +93,38 @@ USB-Serial-JTAG = GPIO19/20 原生),OTG 可切,HID+MSC 可行。
 - **独立电源/电池**:全链路 USB 总线供电(峰值 ~400mA < 500mA 预算),
   产品形态同样保持无电池无外接;仅注意目标机前面板口供电弱时换后面板。
 
-## 三、决策摘要
+## 三、端点分配(2026-10-20 补)
+
+S3 USB-OTG 预算:**共 7 个端点(含 EP0),6 个可配置,IN 方向最多 5 个(含 EP0)**
+(Espressif esp-usb device guide,
+https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/peripherals/usb_device.html)。
+每类功能的端点开销是固定的:
+
+| 功能 | IN | OUT |
+|---|---|---|
+| HID | 1(interrupt) | 0 或 1(可选 interrupt-OUT,LED 回读用) |
+| MSC | 1(bulk) | 1(bulk) |
+| CDC-ACM | 2(1 interrupt-IN 通知 + 1 bulk-IN) | 1(bulk-OUT) |
+| vendor / WebUSB | 1(bulk) | 1(bulk) |
+
+**拓扑反转(设备跑 MCP server)不占 USB 端点**——MCP 走 WiFi/TCP,USB 预算不变。
+
+| 方案 | 占用 | 富余 | 取舍 |
+|---|---|---|---|
+| **A** 单 HID 接口 + 复合报告描述符(Report ID 区分键鼠) | EP0 + HID(IN+OUT) + MSC(IN+OUT) = 5 | 2 | 兼容性略逊,但留出余量 |
+| **A′** 同 A 但砍掉 HID OUT(LED 已退出主路径) | 4 | 3 | **推荐** |
+| **B** 键鼠拆成两个独立 HID 接口 | EP0 + 2×HID(IN+OUT) + MSC(IN+OUT) = 7 | 0 | Windows 干净枚举为两个设备,但无任何余量 |
+
+- **CDC 不可加**:CDC 需 2 IN + 1 OUT,与 HID+MSC 相加后 IN 侧到硬上限、端点归零,不可取。
+- **富余端点的正确用法**:塞一个 **vendor bulk 接口(1 IN + 1 OUT)**——Windows 绑 WinUSB、
+  浏览器可 WebUSB 免驱。量产板没有第二个物理口(日志走 WiFi),这条正好当**产线测试/设备调试口**。
+- **MCP 的 HTTP 端点**:只需 1 个(Streamable HTTP 单端点),不占 USB 端点、无预算问题。
+
+## 四、决策摘要
 
 1. **芯片配置锁定 N16R8**,所有阶段统一,固件无缝迁移。
+5. **端点分配走 A′**(单 HID 接口 + 复合报告描述符,不要 HID OUT),富余 2 个端点
+   留给 vendor 调试口;若实测 Windows 侧要求键鼠独立枚举,再切 B(富余归零)。
 2. RAM disk 设计值改 4-6MB(PSRAM 预算决定),协议文档中 32MB 仅为 FAT16 上限。
 3. 原型开发用 DevKitC;形态实况验证用 ~60 元通用 dongle(N16R8),替代 T-Dongle。
 4. 自研板等 L1 链路跑通后再启动打样。

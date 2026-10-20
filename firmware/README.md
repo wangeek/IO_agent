@@ -28,6 +28,18 @@ idf.py create-project -p ../.. firmware   # 在 IO_agent 根目录执行
 - **FAT16 BPB 正确性**:RAM disk 若 BPB 参数不对,Windows 会提示"需要格式化"甚至不认卷(M1 头号坑)。
 - **ESP32 不能向主机发起数据**:USB 主从 + FAT 缓存;所有输入必须由主机主动写盘。
 
+## 端点与双核(别踩)
+
+- **端点预算**:7 个(含 EP0)、6 可配置、IN 最多 5(含 EP0)。本项目走 **A′ 方案**:
+  单 HID 接口 + 复合报告描述符(Report ID 区分键鼠)+ 不实现 HID OUT(LED 已退出主路径)
+  → 占用 4 个,富余 2 个,留给 **vendor bulk 接口**当产线/调试口。
+  详见 `docs/hardware-selection.md` §三。
+- **双核分工**:**core 0 专职 USB/TinyUSB + HID 注入**,**core 1 跑 WiFi + TLS + HTTP/MCP**。
+  注入时序要求 <10ms/步,不能让 TLS 传输(300KB ≈ 20-60ms CPU)抢到同一核。
+- **帧零拷贝**:从 RAM disk 分块读直接写 socket,不在 PSRAM 另存副本。
+- **PSRAM 预算**:8MB 中 RAM disk 占 4-6MB,应用侧(TLS/HTTP/JSON/MCP/任务栈)约 0.3-0.5MB,
+  不要在设备端做帧仓库或大缓冲。
+
 ## 哑设备原则
 
 固件只**执行与搬运**,不做解码、比对、识别(见 `docs/agent-interface-mcp.md` §一)。

@@ -51,7 +51,9 @@ IO_agent/
 
 ### M1 固件最小可枚举
 - TinyUSB 复合设备:**HID 键盘 + MSC**;PSRAM 内构建 FAT16 镜像(4-6MB 设计值)。
-- 验收:Windows 设备管理器同时出现"键盘"与"可移动磁盘";盘可写可读;拔插不崩。
+- 验收:Windows 设备管理器同时出现"键盘"与"可移动磁盘";盘可写可读;拔插不崩;
+  **端点占用核对**(见 `hardware-selection.md` §三):IN ≤ 4(不含 EP0)、总占用 ≤ 6,
+  富余端点数与方案表一致。
 - 风险点:FAT16 BPB 参数必须正确,否则主机不认卷(会提示"需要格式化")。
 
 ### M2 注入链路
@@ -70,6 +72,9 @@ IO_agent/
 - 设备起 WiFi + mDNS 广播(`_ioagent._tcp.local`);凭据预置(NVS)或 SoftAP 配置。
 - 设备端 TLS-PSK 服务端 + 配对流程(一次性配对码 → PSK)。
 - host 侧 MCP 客户端:发现设备 → 配对 → 调 `observe` 取帧。
+- **双核分工**:core 0 专职 USB/TinyUSB + HID 注入(保 <10ms/步 时序),
+  core 1 跑 WiFi + TLS + HTTP/MCP(TLS 传 300KB 帧约 20-60ms CPU,单核会抖注入时序)。
+- **帧零拷贝**:直接从 RAM disk 分块读 → 直接写 socket,不在 PSRAM 另存 300KB 副本。
 - 验收:插入 → 无人工 → **10s 内 host 侧拿到第一张桌面截图**;
   稳定态随机 20 次全屏截图全部 ≤1s、成功率 100%。
 
