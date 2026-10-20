@@ -1,5 +1,7 @@
 # IO_Agent — ESP32 双向 I/O Agent
 
+> 术语不熟先看 **[`docs/glossary.md`](docs/glossary.md)**(NVS / CDC / L0-L2 / SoftAP 等一律在那儿解释)。
+
 目标:一块 ESP32-S3,插在"不能装软件的机器"上,形成 输入注入 + 回读验证 的闭环 agent。
 
 定位(2026-10-20):ESP32 外设给 AI agent 提供 **物理硬件级输入**(HID 键鼠注入)
@@ -19,7 +21,7 @@
 | Output 分层 | L1 U 盘驻守脚本(默认,免安装) / L0 硬件直采=P4 二代(远期,产品内唯一硬件路线) / L2 目标机有网直连(加速)。**一体化形态约束:外置采集棒等配件堆方案不入实施计划** |
 | 指标 | 稳定形态全屏截图 ≤1s(L1 预算:预览帧 ~350ms / 全帧按需 ~570ms);bootstrap ≤10s 无人工;稳态 USB 写入 <300KB/s |
 | 采集方式 | **GDI `CopyFromScreen`**(一代保传统桌面用途,Windows 自带、零安装、最快);DXGI Desktop Duplication 后续可插拔(采集接口缝已留)。真独占全屏可能黑帧 = 已知边界 |
-| 配网/绑定 | 两级:Level 0 出厂预置(NVS 存 WiFi/端点/token)/ Level 1 SoftAP + 手机配置页(全程不碰目标机);一次性绑定码换长期 token,设备 UUID 进回传包头 |
+| 配网/绑定 | 配置来源三选一:**A 目标机代取**(目标机有外网时由它取配置写盘,推荐)/ B 人工投送配置文件 / C SoftAP + 手机(异地分发才做);一次性绑定码换长期 token,设备 UUID 进回传包头 |
 | bootstrap | Stage -1:配网与绑定(出厂已预置则跳过) → Stage 0:USB 枚举 + HID 通路 + agent 链路连通性(LED 往返降为可选加分项) → Stage 1:HID 敲命令拉起常驻服务 → Stage 2:服务外连+能力自陈 → 之后按目标机器能力降级选通道 |
 | 固件组织 | 每级 = 编译期开关 + 能力注册表;状态机只查"我现在有什么",不假设某级存在 |
 | 描述符 | 自写(TinyUSB 层),**不用 Arduino 便利库** — 后者常不实现 HID OUT 端点、且复合设备端点分配不受控(LED 已退出主路径,端点分配仍是硬理由) |
@@ -39,6 +41,7 @@
 
 ## 目录
 
+- `docs/glossary.md` — **术语表**(读其它文档前先扫一眼)
 - `docs/agent-interface-mcp.md` — **Agent 接口层:手眼模型**(act/observe 原语、N1-N7 裁定、UAC 补充、采集方式定案)
 - `docs/output-channel-design.md` — Output 通道设计 v2(三层架构、延迟预算、屏幕即接口模式)
 - `docs/connectivity-and-binding.md` — **配网、绑定与回传**(两级配网、运行时分级回传、传输安全、产线约束)
