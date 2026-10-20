@@ -10,6 +10,7 @@ connectivity-and-binding.md。
 IO_agent/
 ├── README.md                     架构决策表(总纲)
 ├── docs/                         设计文档(已存在)
+│   ├── glossary.md               术语表(先读这个)
 │   ├── output-channel-design.md  Output 通道 v2(三层/延迟预算)
 │   ├── agent-interface-mcp.md    Agent 接口层:手眼模型
 │   ├── hardware-selection.md     硬件选型与形态
@@ -22,7 +23,7 @@ IO_agent/
 │   ├── usb/                      TinyUSB 描述符:复合设备(HID 键盘/鼠标 + MSC)
 │   ├── disk/                     PSRAM FAT16 镜像 + MSC 后端
 │   ├── hid/                      注入序列执行器(本地定时,<10ms/步)
-│   ├── net/                      WiFi 配网(Level 0/1)、TLS 回传、帧编解码
+│   ├── net/                      配置来源(A/B/C)、TLS 回传、帧编解码
 │   ├── cfg/                      NVS 配置与设备凭据
 │   └── capability/               能力注册表(编译期开关 + 运行时查询)
 ├── watcher/                      目标机侧(零安装,驻 RAM disk)
@@ -65,7 +66,7 @@ IO_agent/
 - 验收:拔盘 5s 内进程自行退出;连续 5fps 取帧 10 分钟,无花屏帧入库。
 
 ### M4 回传链路
-- 配网 Level 0(出厂预置)→ Level 1(SoftAP + 手机配置页)。
+- 配置来源三选一:A 目标机代取(目标机有外网,主路径)/ B 人工投送配置文件 / C SoftAP+手机(异地分发才做)。
 - TLS(PSK)回传、帧编解码、agent 端绑定与鉴权。
 - 验收:插入 → 无人工 → **10s 内 agent 侧收到第一张桌面截图**;
   稳定态随机 20 次全屏截图全部 ≤1s、成功率 100%。
@@ -86,7 +87,7 @@ IO_agent/
 |---|---|---|
 | 1 | **采集走 GDI(CopyFromScreen),游戏/独占全屏后置** | watcher 的采集封装为 `capture` 抽象层,当前实现 GDI;DXGI Desktop Duplication 后续插入同一接口,不动协议与固件。文档如实标注"真独占全屏可能黑帧"为已知边界 |
 | 2 | **分层快照,带宽按变化量收敛** | 见 §四.2 文件与帧率约定;USB 写入稳态 <300KB/s,CMD/RESP 不被饿死 |
-| 3 | **两级配网 + 运行时分级回传** | 见 connectivity-and-binding.md;实现 Level 0 优先,Level 1 作为无配置兜底 |
+| 3 | **配置来源三选一 + 运行时分级回传** | 见 connectivity-and-binding.md §三;主路径 A(目标机代取配置),B/C 为退路 |
 | 4 | **LED 通道退出主路径** | Stage 0 不以 LED 成功为前提;LED 仅作可选调试/心跳;v1 协议文档中 LED 段落标记作废 |
 | 5 | **拔盘无残留靠显式自检,不靠"自然退出"** | watch.ps1 写盘失败即退出;验收清单加入"无残留进程" |
 | 6 | **安全基线平移进实施清单** | op 白名单 / type ≤256B / 鼠标 clamp ±127 / 键盘基线恢复 / 检测到人动键盘即中止 —— 写进 M3 验收条目 |
