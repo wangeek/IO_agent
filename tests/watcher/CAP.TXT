@@ -1,0 +1,1 @@
+{"os":"Win32NT","arch":"AMD64","admin":false,"net":true,"screen":"1536x960","watcher_ver":"0.1.0"}

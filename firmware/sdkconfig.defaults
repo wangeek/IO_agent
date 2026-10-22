@@ -1,0 +1,56 @@
+# IO_agent 默认配置(S3 + N16R8)
+
+CONFIG_IDF_TARGET="esp32s3"
+
+# 16MB Flash / 8MB Octal PSRAM(N16R8)
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# PSRAM:Octal 模式,80MHz
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+
+# 1kHz tick:注入时序目标 <10ms,需要 ms 级定时精度
+CONFIG_FREERTOS_HZ=1000
+
+# 看门狗不允许被看门狗门禁打卡/收窄,WDT
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+
+# ---------------------------------------------------------------------------
+# 日志走 UART0(CH343 -> COM3,开发机)
+#
+# DevKitC-1 上两个 Type-C:
+#   "COM" 口 = CH343 USB-UART 桥 -> UART0(GPIO43/44) -> 开发机:烧录 + 日志
+#   "USB" 口 = ESP32-S3 原生 USB-OTG(GPIO19/20) -> 目标机:TinyUSB 复合设备
+# 所以日志必须走 UART0,不能用原生 USB(那是被 TinyUSB 占用的设备口)。
+# ---------------------------------------------------------------------------
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# 编译器优化:size
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# ---------------------------------------------------------------------------
+# TinyUSB(esp_tinyusb 2.4.0 + tinyusb 0.21.0~2,vendored 在 components/)
+#
+# HID:1 个接口,复合报告描述符(Report ID 1=键盘 / 2=鼠标)
+CONFIG_TINYUSB_HID_COUNT=1
+
+# MSC:故意保持 n!
+# 见 components/README-vendor-patches.md:esp_tinyusb 内置 MSC 层会占用
+# tud_msc_read10_cb 等 5 个回调的强符号,而 IO_agent 的介质是自建 PSRAM RAM disk,
+# 必须由 App 自己实现这 5 个回调。TinyUSB 的 MSC *类驱动* 由 vendor patch
+# (components/esp_tinyusb/include/tusb_config.h 里 CFG_TUD_MSC=1) 打开。
+CONFIG_TINYUSB_MSC_ENABLED=n
+
+# TinyUSB 调试级别:0=无 1=仅错误 2=含警告 3=含信息
+# 2026-10-22 临时开到 3:排查"HID IN 端点一直 busy"(报告排了队但主机不取)。
+# 定位完要改回 1 —— 调试字符串会明显撑大固件。
+CONFIG_TINYUSB_DEBUG_LEVEL=1

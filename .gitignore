@@ -23,3 +23,10 @@ node_modules/
 *.key
 secrets/
 *.cfg.json
+
+# 构建/验收中间产物(镜像、日志、下载的 tar.gz、临时脚本)
+.stage/
+*.log
+
+# 归档区:废弃的第三方版本快照,不进仓库
+firmware/.archive/

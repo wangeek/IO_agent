@@ -1,0 +1,20 @@
+# 行尾统一:仓库内一律 LF。
+#
+# 为什么必须显式写:Windows 上 git 的 core.autocrlf 默认是 true,会把仓库里的
+# LF 在 checkout 时转成 CRLF、再在 add 时转回 —— 这会让每个文件在
+# `git status` 里显示"整文件被改写"的假 diff。写死 eol=lf 就没这问题。
+# (Windows 上的 PowerShell / python / 编译工具链都接受 LF。)
+* text=auto eol=lf
+
+# 批处理在 Windows 上需要 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制:不要做任何行尾/文本转换
+*.bin binary
+*.img binary
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.zip binary
+*.uf2 binary

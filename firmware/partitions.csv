@@ -1,0 +1,27 @@
+# 分区表:16MB Flash
+# 量产需要 OTA(flash encryption 会禁用 ROM USB-OTG 栈,USB 口是产品主接口,
+# 唯一可用的更新通道就是 WiFi OTA),所以从一开始就留 ota_0 / ota_1 双槽。
+#
+# 空间账(2026-10-22 重排):
+#   内嵌 RAM disk 镜像改成**稀疏 + 槽位化**(只输出到最后一个已用扇区,4MB -> 49,664 B;
+#   槽位簇从卷末尾往前分配,簇内容不进镜像 -> 槽位容量在固件里占 0 字节),
+#   app 实际占用从 4.09MB 降到 884,176 B,ota 槽因此从 6MB 缩到 1MB。
+#   "AI 现场就能生成的启动文件"不占固件位置:出厂镜像只留薄引导槽
+#   (WATCH.PS1 32K / AGENT.SH 32K / AGENT.EXE 64K + 宿主信箱 PAYLOAD.BIN 128K),
+#   完整内容走 script0/script1 运行时下发(见 docs/agent-interface-mcp.md)。
+#
+# 2026-10-22 再调整:接上 WiFi + HTTP(MCP server)后,app 从 283KB 涨到 883KB
+#   (WiFi 协议栈 + lwIP + esp_http_server + cJSON)。1MB 的 ota 槽只剩 16% 余量,
+#   后面还要加 TLS-PSK(再加 ~60-80KB mbedTLS)必然爆 —— 把 ota 槽扩到 **2MB**,
+#   留白仍有 10.9MB。
+#   注意:本次改动会移动 script0/script1 的偏移 -> flash 里已有的 payload 快照
+#   读不到了(新位置是空白区,magic 不匹配 -> 干净出厂态),需重新下发一次。
+#
+# Name,     Type, SubType, Offset,   Size,     Flags
+nvs,        data, nvs,     0x9000,   0x6000,
+phy_init,   data, phy,     0xf000,   0x1000,
+otadata,    data, ota,     0x10000,  0x2000,
+ota_0,      app,  ota_0,   0x20000,  0x200000,
+ota_1,      app,  ota_1,   0x220000, 0x200000,
+script0,    data, 0x40,    0x420000, 0x80000,
+script1,    data, 0x40,    0x4A0000, 0x80000,

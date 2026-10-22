@@ -1,0 +1,298 @@
+#include "io_cfg.h"
+
+#include <stdio.h>
+#include <string.h>
+
+#include <esp_log.h>
+#include <esp_wifi.h>
+#include <nvs.h>
+#include <nvs_flash.h>
+#include <driver/uart.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
+static const char *TAG = "io_cfg";
+
+#define NVS_NS      "ioagent"
+#define NVS_KEY_SSID "wifi_ssid"
+#define NVS_KEY_PASS "wifi_pass"
+#define NVS_KEY_PSK  "psk"
+#define NVS_KEY_NAME "name"
+
+static char s_name[IO_CFG_NAME_MAX] = "ioagent";
+
+/* ------------------------------------------------------------------ */
+/* NVS 读写                                                            */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t ns_get_str(const char *key, char *out, size_t len)
+{
+    nvs_handle_t h;
+    esp_err_t rc = nvs_open(NVS_NS, NVS_READONLY, &h);
+    if (rc != ESP_OK) {
+        return (rc == ESP_ERR_NVS_NOT_FOUND) ? ESP_ERR_NOT_FOUND : rc;
+    }
+    size_t out_len = len;
+    rc = nvs_get_str(h, key, out, &out_len);
+    nvs_close(h);
+    return rc;
+}
+
+static esp_err_t ns_set_str(const char *key, const char *val)
+{
+    nvs_handle_t h;
+    esp_err_t rc = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (rc != ESP_OK) {
+        return rc;
+    }
+    rc = nvs_set_str(h, key, val);
+    if (rc == ESP_OK) {
+        rc = nvs_commit(h);
+    }
+    nvs_close(h);
+    return rc;
+}
+
+esp_err_t io_cfg_init(void)
+{
+    esp_err_t rc = nvs_flash_init();
+    if (rc == ESP_ERR_NVS_NO_FREE_PAGES || rc == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "NVS needs erase, reformatting");
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        rc = nvs_flash_init();
+    }
+    if (rc != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_flash_init failed: %s", esp_err_to_name(rc));
+        return rc;
+    }
+
+    char buf[IO_CFG_NAME_MAX];
+    if (ns_get_str(NVS_KEY_NAME, buf, sizeof(buf)) == ESP_OK && buf[0]) {
+        strncpy(s_name, buf, sizeof(s_name) - 1);
+        s_name[sizeof(s_name) - 1] = '\0';
+    }
+    return ESP_OK;
+}
+
+esp_err_t io_cfg_get_wifi(char *ssid, size_t ssid_len, char *pass, size_t pass_len)
+{
+    char s[IO_CFG_WIFI_SSID_MAX];
+    char p[IO_CFG_WIFI_PASS_MAX];
+
+    esp_err_t rc = ns_get_str(NVS_KEY_SSID, s, sizeof(s));
+    if (rc != ESP_OK) {
+        return rc;
+    }
+    if (ns_get_str(NVS_KEY_PASS, p, sizeof(p)) != ESP_OK) {
+        p[0] = '\0';
+    }
+    if (ssid && ssid_len) {
+        strncpy(ssid, s, ssid_len - 1);
+        ssid[ssid_len - 1] = '\0';
+    }
+    if (pass && pass_len) {
+        strncpy(pass, p, pass_len - 1);
+        pass[pass_len - 1] = '\0';
+    }
+    return ESP_OK;
+}
+
+esp_err_t io_cfg_set_wifi(const char *ssid, const char *pass)
+{
+    if (!ssid || !ssid[0]) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t rc = ns_set_str(NVS_KEY_SSID, ssid);
+    if (rc != ESP_OK) {
+        return rc;
+    }
+    return ns_set_str(NVS_KEY_PASS, (pass && pass[0]) ? pass : "");
+}
+
+esp_err_t io_cfg_get_psk(char *psk, size_t len)
+{
+    return ns_get_str(NVS_KEY_PSK, psk, len);
+}
+
+esp_err_t io_cfg_set_psk(const char *psk)
+{
+    if (!psk || !psk[0]) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return ns_set_str(NVS_KEY_PSK, psk);
+}
+
+const char *io_cfg_device_name(void)
+{
+    return s_name;
+}
+
+esp_err_t io_cfg_set_device_name(const char *name)
+{
+    if (!name || !name[0]) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t rc = ns_set_str(NVS_KEY_NAME, name);
+    if (rc == ESP_OK) {
+        strncpy(s_name, name, sizeof(s_name) - 1);
+        s_name[sizeof(s_name) - 1] = '\0';
+    }
+    return rc;
+}
+
+/* ------------------------------------------------------------------ */
+/* 串口命令行(首次配网)                                                */
+/* ------------------------------------------------------------------ */
+
+static void print_wifi_scan(void)
+{
+    wifi_scan_config_t cfg = {
+        .show_hidden = false,
+    };
+    ESP_LOGI(TAG, "scanning for APs ...");
+    ESP_ERROR_CHECK(esp_wifi_scan_start(&cfg, true));
+
+    uint16_t n = 0;
+    wifi_ap_record_t *ap = NULL;
+    if (esp_wifi_scan_get_ap_num(&n) == ESP_OK && n > 0) {
+        ap = (wifi_ap_record_t *)malloc(sizeof(wifi_ap_record_t) * n);
+        if (ap) {
+            if (esp_wifi_scan_get_ap_records(&n, ap) == ESP_OK) {
+                for (uint16_t i = 0; i < n; i++) {
+                    /* 用 printf 而不是 ESP_LOG:串口命令的输出要给人看,不带时间戳前缀 */
+                    printf("ap: %s  ch=%d  rssi=%d\n", ap[i].ssid, ap[i].primary,
+                           ap[i].rssi);
+                }
+            }
+            free(ap);
+        }
+    }
+    esp_wifi_scan_stop();
+    printf("scan done, %u AP(s)\n", (unsigned)n);
+}
+
+static void print_status(void)
+{
+    char ssid[IO_CFG_WIFI_SSID_MAX];
+    char pass[IO_CFG_WIFI_PASS_MAX];
+    char psk[IO_CFG_PSK_MAX];
+
+    if (io_cfg_get_wifi(ssid, sizeof(ssid), pass, sizeof(pass)) == ESP_OK) {
+        printf("wifi: ssid=\"%s\" pass=%s\n", ssid, pass[0] ? "<set>" : "<open>");
+    } else {
+        printf("wifi: <not configured>\n");
+    }
+    if (io_cfg_get_psk(psk, sizeof(psk)) == ESP_OK) {
+        printf("psk : <set>\n");
+    } else {
+        printf("psk : <not configured>\n");
+    }
+    printf("name: %s\n", s_name);
+}
+
+static void handle_line(char *line)
+{
+    /* 去掉行尾空白 */
+    for (int i = (int)strlen(line) - 1; i >= 0 && (line[i] == '\r' || line[i] == '\n' || line[i] == ' '); i--) {
+        line[i] = '\0';
+    }
+    if (!line[0]) {
+        return;
+    }
+    printf("ioagent> %s\n", line);
+
+    if (strcmp(line, "wifi scan") == 0) {
+        print_wifi_scan();
+        return;
+    }
+    if (strcmp(line, "status") == 0) {
+        print_status();
+        return;
+    }
+    if (strncmp(line, "wifi set ", 9) == 0) {
+        char *ssid = line + 9;
+        char *pass = strchr(ssid, ' ');
+        if (pass) {
+            *pass++ = '\0';
+        } else {
+            pass = (char *)"";
+        }
+        esp_err_t rc = io_cfg_set_wifi(ssid, pass);
+        printf("wifi set: %s\n", (rc == ESP_OK) ? "ok, reboot to apply" : esp_err_to_name(rc));
+        return;
+    }
+    if (strncmp(line, "psk set ", 8) == 0) {
+        esp_err_t rc = io_cfg_set_psk(line + 8);
+        printf("psk set: %s\n", (rc == ESP_OK) ? "ok" : esp_err_to_name(rc));
+        return;
+    }
+    if (strncmp(line, "name set ", 9) == 0) {
+        esp_err_t rc = io_cfg_set_device_name(line + 9);
+        printf("name set: %s\n", (rc == ESP_OK) ? "ok" : esp_err_to_name(rc));
+        return;
+    }
+    printf("unknown command (try: wifi scan / wifi set / psk set / name set / status)\n");
+}
+
+static void console_task(void *arg)
+{
+    (void)arg;
+    static char line[128];
+    size_t len = 0;
+
+    printf("\n=== IO_Agent console ===\n");
+    printf("commands: wifi scan | wifi set <ssid> [pass] | psk set <psk> | name set <n> | status\n");
+    printf("ioagent> ");
+
+    for (;;) {
+        uint8_t ch;
+        const int n = uart_read_bytes(UART_NUM_0, &ch, 1, portMAX_DELAY);
+        if (n != 1) {
+            continue;
+        }
+        if (ch == '\r' || ch == '\n') {
+            if (len) {
+                line[len] = '\0';
+                handle_line(line);
+                len = 0;
+            }
+            printf("ioagent> ");
+            continue;
+        }
+        if (ch == '\b' || ch == 127) {
+            if (len) {
+                len--;
+            }
+            continue;
+        }
+        if (ch >= 0x20 && len < sizeof(line) - 1) {
+            line[len++] = (char)ch;
+        }
+    }
+}
+
+esp_err_t io_cfg_start_console(void)
+{
+    /* UART0 的 RX 也可能没接(只接 TX 做日志),读不到就安静待着。 */
+    const uart_config_t cfg = {
+        .baud_rate = 115200,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_APB,
+    };
+    if (uart_param_config(UART_NUM_0, &cfg) != ESP_OK) {
+        ESP_LOGW(TAG, "console: UART0 param config failed, console disabled");
+        return ESP_FAIL;
+    }
+    if (uart_driver_install(UART_NUM_0, 256, 0, 0, NULL, 0) != ESP_OK) {
+        ESP_LOGW(TAG, "console: UART0 driver install failed, console disabled");
+        return ESP_FAIL;
+    }
+    if (xTaskCreate(console_task, "cfgcon", 4096, NULL, 2, NULL) != pdPASS) {
+        return ESP_ERR_NO_MEM;
+    }
+    ESP_LOGI(TAG, "console task started on UART0");
+    return ESP_OK;
+}
