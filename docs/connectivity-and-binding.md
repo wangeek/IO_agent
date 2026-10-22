@@ -93,7 +93,7 @@ agent 拉帧时可能拿到几百毫秒前的旧帧。机制:
 |---|---|
 | 传输 | 用 **Streamable HTTP**(单端点 POST + JSON-RPC 2.0);不用 SSE 双通道,MCU 上更省 |
 | 帧的返回 | `resources/read` 返回 blob URI(裸二进制),避免 300KB base64 膨胀 |
-| 工具集 | 设备端只需 4 个:`act` / `observe` / `watcher(start\|stop\|status)` / `device(info)` |
+| 工具集 | 设备端只需 4 个:`act` / `observe` / `watcher(start\|stop\|status)` / `device(info)`。**2026-10-22 增第 5 个 `deploy_payload`**(T2 运行时下发,见 `agent-interface-mcp.md` §二)。**已落地**:`device/info` / `act` / `observe` / `watcher/status` / `deploy_payload` |
 | 内存 | TLS + HTTP + JSON + 300KB 帧缓冲,8MB PSRAM 够;JSON 缓冲要复用 |
 | CPU | TLS-PSK 软件加密约 5-15MB/s → 300KB 约 20-60ms,可接受 |
 | 帧节奏 | 2fps 预览 + 按需全帧;设备端做**字节搬运**,不做解码(哑设备原则不变) |
@@ -117,8 +117,16 @@ agent 拉帧时可能拿到几百毫秒前的旧帧。机制:
 
 - **Stage 0**:设备上电 → 自检(HID 通路 / PSRAM / WiFi)→ 若凭据已预置则连 WiFi →
   起 mDNS 广播 → agent 可发现。**不再需要配网门户作为必经步骤。**
-- **Stage 1**:按 §七 策略拉起目标机驻守脚本(HID 敲 `Win+R` → 跑盘上 `watch.ps1`)
+  *当前实现:*凭据在 NVS,用 **UART0 控制台配网**(`wifi set <ssid> [pass]`);
+  **mDNS 与 TLS-PSK 待做**,现阶段 agent 用串口日志里打印的 IP 直连设备 MCP 端点
+  (`POST /mcp` / `GET /ping`)。
+- **Stage 1**:按 §七 策略拉起目标机驻守脚本(HID 敲 `Win+R` → 注入**按卷标解析**的
+  启动命令,见 `output-channel-design.md` §四 L1;注入后轮询 RAM disk 里的 `CAP.TXT`
+  判定拉起成功,未出现则 2s 间隔重试,最多 5 次)
   → 脚本写 `CAP.TXT`。
+  *当前实现:*`IO_LAUNCHER_AUTOSTART` **默认 0** —— **开机不自动拉起**;
+  注入只由远程 `act` **单次触发、零重试**(往用户机器注入是对用户环境的破坏性操作,
+  锁屏时会被当成 PIN 输入而触发账户防暴力锁定,见 `agent-interface-mcp.md` §二之三)。
 - **Stage 2**:agent 连上 → 配对/鉴权 → 读 `CAP.TXT` 做能力自陈 → 闭环可用。
 - **之后**:按目标机能力降级选通道(网络 > UART > 音频 > 摄像头)。
 

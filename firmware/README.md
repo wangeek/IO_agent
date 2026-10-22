@@ -11,11 +11,14 @@ idf.py create-project -p ../.. firmware   # 在 IO_agent 根目录执行
 | 目录 | 职责 |
 |---|---|
 | `main/` | 应用入口、状态机、bootstrap 流程(Stage -1/0/1/2) |
-| `usb/` | TinyUSB 描述符:复合设备 **HID 键盘/鼠标 + MSC**,自写不用 Arduino 便利库 |
-| `disk/` | PSRAM 内 FAT16 镜像(4-6MB 设计值)+ MSC 后端;预置脚本镜像 |
-| `hid/` | 注入序列执行器:本地定时执行,<10ms/步;`focus_reset` 宏(IME 归零→Win+M→Win+R) |
-| `net/` | WiFi、mDNS 广播、TLS-PSK 服务端、HTTP 服务 |
-| `cfg/` | NVS 配置与设备凭据(WiFi 凭据 / PSK / watcher 拉起策略) |
+| `io_usb/` | TinyUSB 描述符:复合设备 **HID 键盘/鼠标 + MSC**,自写不用 Arduino 便利库 |
+| `io_disk/` | PSRAM 内 FAT16 镜像(4-6MB 设计值,**出厂镜像稀疏 + 槽位化:4MB 卷只内嵌约 48KB**)+ MSC 后端;**槽位表 + `io_disk_apply_slot()`(memcpy + 定点写目录项 size 字段,FAT 表一字节不动)** |
+| `io_payload/` | T2 flash payload 仓:`script0`/`script1` A/B 全量快照(seq 大者胜 + 全 CRC 通过才有效,写非生效分区 → 断电安全)、自实现 CRC32(与宿主 `zlib.crc32` 逐字节一致)、**信箱 ingest**(轮询 `PAYLOAD.BIN` 头 → 落 flash → 覆盖槽位) |
+| `io_hid/` | 注入序列执行器:本地定时执行,<10ms/步;`focus_reset` 宏(IME 归零→Win+M→Win+R);**US 布局表(95 字符)+ 自检**(表被改坏就拒绝打字);`io_hid_wait_ready()`(端点忙是有上限的短轮询,不是故障) |
+| `io_launcher/` | 拉起目标机 watcher:卷标解析的启动命令 + `CAP.TXT` 闭环。**默认关**(`IO_LAUNCHER_AUTOSTART=0`)—— 往用户机器注入是对用户环境的破坏性操作,只允许远程 `act` 单次触发、零重试 |
+| `io_cfg/` | NVS 配置(WiFi 凭据 / PSK / 设备名)+ **UART0 控制台**(`wifi scan` / `wifi set <ssid> [pass]` / `psk set` / `name set` / `status`)。凭据不进仓库、不进固件二进制 |
+| `io_net/` | WiFi STA + 退避重连(无凭据时不重试);mDNS 发现待做(IDF 5.5 无内置 mDNS 组件) |
+| `io_mcp/` | MCP server:HTTP + JSON-RPC 2.0,端点 `/mcp` / `/ping` / `/blob/b0..3`,工具 `device/info` / `act` / `observe` / `watcher/status` / `deploy_payload`。**当前明文 HTTP**,TLS-PSK 待做 |
 | `capability/` | 能力注册表:编译期开关 + 运行时查询,状态机只查"我现在有什么" |
 
 ## 不可绕的硬件约束(踩坑前先读)

@@ -48,10 +48,22 @@ v1(msc-watcher-protocol.md)假设数据在虚拟 U 盘上双向流动。物理�
 
 ### L1 主通道:U 盘驻守脚本(默认,免安装)
 
-- 工具与脚本预置在 ESP32 的 RAM disk(X: 盘),**不落目标机硬盘**。
-- bootstrap:HID 注入 `Win+R` → 键入
-  `powershell -ExecutionPolicy Bypass -File X:\watch.ps1` → 回车(~3s,仅首次)。
+- 工具与脚本预置在 ESP32 的 RAM disk(虚拟 U 盘),**不落目标机硬盘**。
+- bootstrap:HID 注入 `Win+R` → 键入**按卷标解析**的启动命令 → 回车(~3s,仅首次):
+  ```
+  cmd /c for %d in (I O A G E N T) do @if exist %d:\WATCH.PS1 start "" powershell -ExecutionPolicy Bypass -WindowStyle Hidden %d:\WATCH.PS1
+  ```
+  **不写死盘符(2026-10-22 定案)**:dongle 形态拔线即整机断电,重入是冷启动,
+  Windows 可能分配到别的盘符。命令按**卷标**枚举候选盘符(`IOAGENT` 的每个字母),
+  `if exist` 命中即启动,只依赖 cmd 内建语法(不依赖 `Get-Volume` 之类的可选模块)。
+- **拉起成功判定(闭环)**:设备注入后轮询 RAM disk 里的 `CAP.TXT`(watcher 启动时写的
+  能力自陈),出现即判定拉起成功;未出现则按 2s 间隔重试注入,最多 5 次。
+  这条同时给 agent 提供 watcher 存活信号。
 - `watch.ps1` 进程级常驻(隐藏窗口):自动识别可移动盘盘符 → 采集 → 写盘。
+- **预置内容的边界(2026-10-22)**:出厂镜像只留**薄引导槽** —— "AI 现场就能生成的
+  启动文件"不占固件位置。完整内容走 `script0/script1` flash 仓运行时下发(见
+  `docs/agent-interface-mcp.md`),所以出厂镜像是稀疏的(4MB 卷只内嵌 **49,664 B / 97 扇区**)。
+  槽位:`WATCH.PS1` 32K / `AGENT.SH` 32K / `AGENT.EXE` 64K + 宿主信箱 `PAYLOAD.BIN` 128K。
 - **采集方式(2026-10-20 定案)**:GDI `CopyFromScreen` + JPEG 编码。
   一代保**传统桌面用途**(Windows 自带、零安装、最快);
   真独占全屏(D3D9 FSE / DirectDraw)可能黑帧,属已知边界,后续可插拔
@@ -130,7 +142,7 @@ L2 要求目标机去**推**给 agent,与新模型冲突(agent 是纯客户端,�
 2. **EDR/AMSI 可能拦截从可移动盘运行的 ps1**:企业强管控环境 L1 会失效;
    二代 P4 直采上线前一代无产品内兜底,此类环境视为一代适用范围之外。
    watch.ps1 编写时避开敏感特征,不与杀软对抗。
-3. **U 盘写入速率 ~1MB/s**:L1 下大文件(>10MB)回读慢;大文件场景应升级 L2,
+3. **U 盘写入速率 ~1MB/s**:L1 下大文件(>10MB)回读慢;大文件场景走 RESP 分块慢传(原"升级 L2"已随拓扑反转作废),
    或等二代硬件(P4 USB HS,写入 20MB/s 级)。L1 定位是"小数据高频回读"。
    2026-10-20 定案:常驻通道改为分层快照(2fps 降采样预览 + 变化 ROI),
    稳态写入 <300KB/s,不再有 1080p×5fps 连续写盘压满总线的问题(见 §四 L1)。
