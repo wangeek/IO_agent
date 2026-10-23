@@ -28,6 +28,15 @@ esp_err_t io_net_init(void);
 esp_err_t io_net_connect(const char *ssid, const char *pass);
 
 /** 是否已连上 WiFi 并拿到 IP。 */
+/**
+ * 用新的凭据(或 NVS 里已有的)重连 WiFi。
+ *
+ * 与 io_net_connect() 的区别:这个函数**不会**因为 esp_wifi_start() 失败而 abort
+ * —— WiFi 栈早就启动过了,重复 start 返回错误是正常的。
+ * 配网文件(DEV.CFG)变化后用它重连。
+ */
+esp_err_t io_net_reconnect(const char *ssid, const char *pass);
+
 bool io_net_is_connected(void);
 
 /** 当前 IP(字符串,没连上返回 "0.0.0.0")。 */

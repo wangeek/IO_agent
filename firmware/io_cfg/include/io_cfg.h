@@ -14,6 +14,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -39,6 +40,25 @@ esp_err_t io_cfg_get_psk(char *psk, size_t len);
 
 /** 写设备 PSK。 */
 esp_err_t io_cfg_set_psk(const char *psk);
+
+/**
+ * 从虚拟盘上的配网文件 `DEV.CFG` 取 WiFi 凭据并写进 NVS。
+ *
+ * 为什么需要这个入口:设备**还没有任何网络**的时候,agent 连不上它,
+ * 串口也不一定接着 —— 这时唯一能用的通道就是 **U 盘**(宿主写 → 设备读,
+ * 方向天然对)。所以宿主把配置文件写到卷上,设备自己取。
+ *
+ * 文件格式(行式,`key=value`,`#` 开头是注释):
+ *     ssid=MyNetwork
+ *     pass=secret123
+ *     name=ioagent-lab
+ *
+ * 幂等:文件内容的 CRC 记在 NVS 里,**同一份文件不会重复应用**
+ * (所以运行时用 MCP 改了 WiFi 之后,盘上那份旧文件不会把它改回去)。
+ *
+ * @param changed 置 true 表示"凭据确实变了,调用方需要重连"
+ */
+esp_err_t io_cfg_apply_provisioning_file(bool *changed);
 
 /** 设备名(默认 "ioagent")。 */
 const char *io_cfg_device_name(void);

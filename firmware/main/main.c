@@ -49,6 +49,27 @@ static void netboot_task(void *arg)
     }
 }
 
+/*
+ * 配网轮询:宿主把 DEV.CFG 写到虚拟盘上,设备每 5 秒看一眼,
+ * 内容变了就写进 NVS 并重连。
+ *
+ * 为什么要有这条:设备**还没有任何网络**的时候 agent 连不上它、串口也未必
+ * 接着 —— U 盘是唯一方向天然对的通道(宿主写 → 设备读)。
+ * 顺带它也是"运行时换网"的路径:写文件即可,不用重启。
+ */
+static void prov_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        bool changed = false;
+        if (io_cfg_apply_provisioning_file(&changed) == ESP_OK && changed) {
+            ESP_LOGI(TAG, "provisioning file changed -> reconnecting WiFi");
+            io_net_reconnect(NULL, NULL);
+        }
+        vTaskDelay(pdMS_TO_TICKS(5000));
+    }
+}
+
 static void status_task(void *arg)
 {
     (void)arg;
@@ -137,6 +158,16 @@ void app_main(void)
      * panic 重启循环(踩过:没配网就无限重启,连串口命令都执行不了)。 */
     ESP_ERROR_CHECK(io_cfg_init());
     ESP_ERROR_CHECK(io_cfg_start_console());
+
+    /*
+     * 配网:开机先取一次盘上的 DEV.CFG(有就写进 NVS),
+     * 这样第一次连接就用上新的凭据,不用等 5 秒轮询。
+     */
+    bool prov_changed = false;
+    if (io_cfg_apply_provisioning_file(&prov_changed) == ESP_OK && prov_changed) {
+        ESP_LOGI(TAG, "provisioning applied from DEV.CFG before connecting");
+    }
+
     ESP_ERROR_CHECK(io_net_init());
     const esp_err_t nc = io_net_connect(NULL, NULL);
     if (nc != ESP_OK) {
@@ -145,6 +176,7 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(io_mcp_start());
     xTaskCreate(netboot_task, "netboot", 3072, NULL, 3, NULL);
+    xTaskCreate(prov_task, "prov", 3072, NULL, 3, NULL);
 
     xTaskCreate(status_task, "status", 3072, NULL, 3, NULL);
 

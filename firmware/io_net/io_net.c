@@ -6,6 +6,7 @@
 #include <esp_event.h>
 #include <esp_netif.h>
 #include <esp_wifi.h>
+#include <esp_check.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -117,6 +118,48 @@ esp_err_t io_net_connect(const char *ssid, const char *pass)
     ESP_LOGI(TAG, "connecting to \"%s\" ...", s);
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
     ESP_ERROR_CHECK(esp_wifi_start());
+    return ESP_OK;
+}
+
+esp_err_t io_net_reconnect(const char *ssid, const char *pass)
+{
+    char s[IO_CFG_WIFI_SSID_MAX];
+    char p[IO_CFG_WIFI_PASS_MAX];
+
+    if (ssid && ssid[0]) {
+        strncpy(s, ssid, sizeof(s) - 1);
+        s[sizeof(s) - 1] = '\0';
+        strncpy(p, (pass && pass[0]) ? pass : "", sizeof(p) - 1);
+        p[sizeof(p) - 1] = '\0';
+    } else if (io_cfg_get_wifi(s, sizeof(s), p, sizeof(p)) != ESP_OK) {
+        s_has_creds = false;
+        return ESP_ERR_NOT_FOUND;
+    }
+    s_has_creds = true;
+
+    wifi_config_t wc = { 0 };
+    strncpy((char *)wc.sta.ssid, s, sizeof(wc.sta.ssid) - 1);
+    strncpy((char *)wc.sta.password, p, sizeof(wc.sta.password) - 1);
+    wc.sta.threshold.authmode = (p[0] == '\0') ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
+
+    ESP_LOGI(TAG, "reconnecting to \"%s\" ...", s);
+    ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &wc), TAG, "set config failed");
+
+    /*
+     * esp_wifi_start() 在已经启动时会返回错误 —— 那是**正常**的,
+     * 不能像 io_net_connect() 那样 ESP_ERROR_CHECK(直接 abort)。
+     * 这里只关心"配置换掉了",所以启动失败也继续走重连。
+     */
+    const esp_err_t started = esp_wifi_start();
+    if (started != ESP_OK) {
+        ESP_LOGD(TAG, "wifi already started (%s)", esp_err_to_name(started));
+    }
+    esp_wifi_disconnect();
+    vTaskDelay(pdMS_TO_TICKS(200));
+    s_connected = false;
+    s_connecting = true;
+    s_retry_ms = WIFI_RETRY_MIN_MS;
+    esp_wifi_connect();
     return ESP_OK;
 }
 

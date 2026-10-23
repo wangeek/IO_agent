@@ -11,6 +11,8 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include "io_disk.h"
+
 static const char *TAG = "io_cfg";
 
 #define NVS_NS      "ioagent"
@@ -18,6 +20,11 @@ static const char *TAG = "io_cfg";
 #define NVS_KEY_PASS "wifi_pass"
 #define NVS_KEY_PSK  "psk"
 #define NVS_KEY_NAME "name"
+#define NVS_KEY_PROV_CRC "prov_crc"
+
+/* 配网文件:宿主写到虚拟盘上,设备自己取(见 io_cfg.h 的说明) */
+#define PROV_FILE   "DEV.CFG"
+#define PROV_MAX    512
 
 static char s_name[IO_CFG_NAME_MAX] = "ioagent";
 
@@ -46,6 +53,33 @@ static esp_err_t ns_set_str(const char *key, const char *val)
         return rc;
     }
     rc = nvs_set_str(h, key, val);
+    if (rc == ESP_OK) {
+        rc = nvs_commit(h);
+    }
+    nvs_close(h);
+    return rc;
+}
+
+static esp_err_t ns_get_u32(const char *key, uint32_t *out)
+{
+    nvs_handle_t h;
+    esp_err_t rc = nvs_open(NVS_NS, NVS_READONLY, &h);
+    if (rc != ESP_OK) {
+        return (rc == ESP_ERR_NVS_NOT_FOUND) ? ESP_ERR_NOT_FOUND : rc;
+    }
+    rc = nvs_get_u32(h, key, out);
+    nvs_close(h);
+    return rc;
+}
+
+static esp_err_t ns_set_u32(const char *key, uint32_t val)
+{
+    nvs_handle_t h;
+    esp_err_t rc = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (rc != ESP_OK) {
+        return rc;
+    }
+    rc = nvs_set_u32(h, key, val);
     if (rc == ESP_OK) {
         rc = nvs_commit(h);
     }
@@ -127,6 +161,128 @@ const char *io_cfg_device_name(void)
     return s_name;
 }
 
+/* ------------------------------------------------------------------ */
+/* 配网文件(DEV.CFG):宿主写 U 盘 → 设备自己取                              */
+/* ------------------------------------------------------------------ */
+
+static uint32_t fnv1a(const uint8_t *d, size_t n)
+{
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < n; i++) {
+        h ^= d[i];
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static void trim_ascii(char *s)
+{
+    size_t n = strlen(s);
+    while (n && (s[n - 1] == ' ' || s[n - 1] == '\t' || s[n - 1] == '\r' || s[n - 1] == '\n')) {
+        s[--n] = '\0';
+    }
+    size_t i = 0;
+    while (s[i] == ' ' || s[i] == '\t') {
+        i++;
+    }
+    if (i) {
+        memmove(s, s + i, strlen(s + i) + 1);
+    }
+}
+
+esp_err_t io_cfg_apply_provisioning_file(bool *changed)
+{
+    if (changed) {
+        *changed = false;
+    }
+
+    char buf[PROV_MAX];
+    size_t len = 0;
+    if (io_disk_read_file(PROV_FILE, buf, sizeof(buf) - 1, &len) != ESP_OK || len == 0) {
+        return ESP_ERR_NOT_FOUND;     /* 盘上没有配网文件 */
+    }
+    buf[len] = '\0';
+
+    /* 幂等:同一份文件不重复应用(否则运行时改完 WiFi,盘上旧文件会改回去) */
+    const uint32_t crc = fnv1a((const uint8_t *)buf, len);
+    uint32_t old = 0;
+    if (ns_get_u32(NVS_KEY_PROV_CRC, &old) == ESP_OK && old == crc) {
+        return ESP_OK;
+    }
+
+    char ssid[IO_CFG_WIFI_SSID_MAX] = {0};
+    char pass[IO_CFG_WIFI_PASS_MAX] = {0};
+    char name[IO_CFG_NAME_MAX] = {0};
+    bool have_ssid = false;
+    bool have_pass = false;
+
+    char *line = buf;
+    while (line && *line) {
+        char *nl = strchr(line, '\n');
+        if (nl) {
+            *nl = '\0';
+        }
+        char *hash = strchr(line, '#');
+        if (hash) {
+            *hash = '\0';
+        }
+        trim_ascii(line);
+        char *eq = strchr(line, '=');
+        if (eq) {
+            *eq = '\0';
+            char *key = line;
+            char *val = eq + 1;
+            trim_ascii(key);
+            trim_ascii(val);
+            if (!strcmp(key, "ssid") && val[0]) {
+                strncpy(ssid, val, sizeof(ssid) - 1);
+                have_ssid = true;
+            } else if (!strcmp(key, "pass")) {
+                strncpy(pass, val, sizeof(pass) - 1);
+                have_pass = true;    /* 写了 pass= 就是显式给密码(空=开放网络) */
+            } else if (!strcmp(key, "name") && val[0]) {
+                strncpy(name, val, sizeof(name) - 1);
+            }
+        }
+        line = nl ? nl + 1 : NULL;
+    }
+
+    if (!have_ssid) {
+        ESP_LOGW(TAG, "%s has no ssid -- ignored", PROV_FILE);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    /*
+     * 没写 pass 键 = **沿用 NVS 里已有的密码**(只换 SSID 时不必重贴密码);
+     * 写了 pass= (空) = 开放网络。
+     */
+    if (!have_pass) {
+        char old[IO_CFG_WIFI_PASS_MAX] = {0};
+        if (io_cfg_get_wifi(NULL, 0, old, sizeof(old)) == ESP_OK) {
+            strncpy(pass, old, sizeof(pass) - 1);
+            pass[sizeof(pass) - 1] = '\0';
+        }
+    }
+
+    esp_err_t rc = io_cfg_set_wifi(ssid, pass);
+    if (rc != ESP_OK) {
+        return rc;
+    }
+    if (name[0]) {
+        io_cfg_set_device_name(name);
+    }
+    rc = ns_set_u32(NVS_KEY_PROV_CRC, crc);
+    if (rc != ESP_OK) {
+        return rc;
+    }
+    /* 密码不打印 */
+    ESP_LOGW(TAG, "provisioning applied from %s: ssid=\"%s\" pass=%s name=%s",
+             PROV_FILE, ssid, pass[0] ? "<set>" : "<open>", name[0] ? name : s_name);
+    if (changed) {
+        *changed = true;
+    }
+    return ESP_OK;
+}
 esp_err_t io_cfg_set_device_name(const char *name)
 {
     if (!name || !name[0]) {
