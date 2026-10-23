@@ -164,9 +164,26 @@ Windows 账户防暴力锁定(实测事故:设备每 3 秒重试一轮,目标机
     Shift 时触发,字符表(只有可打印 ASCII)发不出"裸 Shift"。
   - 时序默认值:**组合键按住 600ms、单键 60ms、逐字符 60ms**(实测标定,
     见 `implementation-plan.md` §M2);`hold_ms` / `per_char_ms` 可覆盖。
-  - `macro=selftest` 注入一条把标记写回盘的命令,返回 `marker_seen`
-    (盘上出现 `INJ.TXT` = HID 真的到达了目标机);`macro=launch_watcher` 同理
-    返回 `marker_seen`(盘上出现 `CAP.TXT` = watcher 真的起来了)。
+  - **长动作异步**:`macro` 与超过 16 字符的 `type` 派给 worker task,
+    请求**立刻回** `{"ok":true,"accepted":true,"busy":true}`,**不等结果**;
+    结果由 agent 回读盘上标记(`INJ.TXT` / `CAP.TXT`)判定。
+    短动作(tap/hotkey/move/click/scroll/短 type)在请求里同步执行完。
+  - **单例 + busy**:同一时刻只跑一个动作;动作在跑时再来一个动作请求 →
+    立刻回 `{"ok":false,"busy":true}`(不排队执行)。
+    读类工具(observe / watcher/status / device/info)在动作执行期间**照常服务**。
+  - **输入态要"先测后打"**(2026-10-23 实测):输入态由 IME 实例记忆,盲按 Shift
+    的结果取决于上一轮(历史实测 OK/FAIL 交替)。所以:
+    ① `macro=selftest` = 探针(它打的就是自检命令):`INJ.TXT` 出现 ⇒ 当前是
+    **英文态**;不出现 ⇒ **中文态**。
+    ② 中文态时先 `macro=ime_toggle`(单按 Shift,只切态、不输入任何字符)→
+    再探针一次。
+    ③ `macro=launch_watcher` 按探针结论选档:英文态用默认;中文态加
+    `"ime":"toggle"`(新框继承中文 → Shift 一下 → 英文)。
+    **设备端不自动重试**(注入是破坏性操作),重试由 agent 决定。
+  - **动作不再自动回传前后两帧**:异步模型下"后一张"没有意义(请求早返回了),
+    由 agent 自己用 `observe` 取前后帧来比对。
+  - `macro=selftest` 注入一条把标记写回盘的命令,设备以盘上是否出现 `INJ.TXT`
+    判定"HID 真的到达了目标机";`macro=launch_watcher` 同理以 `CAP.TXT` 判定。
 - **`deploy_payload`** 落 flash,**下次开机生效**(真源/副本契约)。
 
 **当前实现状态**:明文 HTTP;凭据在 NVS,**用 UART0 控制台配网**
@@ -174,14 +191,17 @@ Windows 账户防暴力锁定(实测事故:设备每 3 秒重试一轮,目标机
 凭据**不进仓库、不进固件二进制**。**mDNS 发现与 TLS-PSK 双向鉴权待做**
 (候选见 `implementation-plan.md` 决策 13)。
 
-**并发模型(2026-10-23 定调)**:MCP over HTTP+JSON 是**被 agent 生态逼出来的兼容层**,
-不是产品目标 —— 设备端**单例模式**:一次只执行一个请求/操作;
-**有请求在执行时,新请求直接返回 `busy`**(不排队执行),`BUSY` 沿用既有命令状态词表。
+**并发模型(2026-10-23 定调,已实现)**:MCP over HTTP+JSON 是**被 agent 生态逼出来的兼容层**,
+不是产品目标 —— 设备端**单例模式**:一次只执行一个动作;
+**有动作在执行时,新的动作请求直接返回 `busy`**(不排队执行),`BUSY` 沿用既有命令状态词表。
 
-实现约束(查证 esp_http_server 源码):它是**单 task**,长操作在 handler 里跑时,
-第二个请求**连 handler 都进不去** → 物理上拿不到 `busy`。
-"物理上立刻"需要:长操作移出 httpd task(worker task)+ 发起方不等结果
-(结果由盘上标记 `INJ.TXT`/`CAP.TXT` 回读),**不引入 job 状态机/轮询端点**。
+实现方式(查证 esp_http_server 源码后定的):它是**单 task**,长操作在 handler 里跑时,
+第二个请求**连 handler 都进不去** → 物理上拿不到 busy。所以:
+**长操作移出 httpd task(worker task)** → httpd task 一直能应答,busy 立刻可达;
+**发起方不等结果**,结果由盘上标记文件回读(不需要 job 状态机/轮询端点)。
+附带好处:注入进行中**读类工具照常服务** —— 注入时"眼"是睁着的。
+
+`device/info` 带 `busy` 字段(agent 轮询它就知道后台动作跑完没有)。
 
 验收方式用**裸 HTTP 构造**(不依赖 MCP 客户端):`tools/mcp_probe.py`。
 注意 **PowerShell 把 JSON 传给 `curl.exe` 会吃掉双引号**(报 `invalid JSON`),
