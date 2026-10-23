@@ -34,6 +34,8 @@
 #include <cJSON.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <freertos/queue.h>
+#include <freertos/semphr.h>
 
 #include "io_cfg.h"
 #include "io_disk.h"
@@ -67,6 +69,89 @@ static uint8_t       *s_blob_mem;
 static io_blob_meta_t s_blob[IO_BLOB_SLOTS];
 static uint32_t       s_blob_next;    /* 环形游标 */
 static uint32_t       s_blob_seq;
+
+/* ------------------------------------------------------------------ */
+/* 单例执行槽 + worker task                                            */
+/* ------------------------------------------------------------------ */
+/*
+ * 设备端是**单例**:同一时刻只跑一个动作。有动作在执行时,再来一个
+ * 动作请求 → **直接回 busy**,不排队执行。
+ *
+ * 为什么长动作必须移出 httpd task:esp_http_server 是**单 task**
+ * (一个 server task 串行处理所有会话)—— 长动作跑在 handler 里的话,
+ * 第二个请求连 handler 都进不去,物理上拿不到 busy。挪到 worker task
+ * 之后,httpd task 一直能应答,busy 才问得出来。
+ *
+ * 好处:注入进行中,**读类工具(observe / watcher/status / device/info)
+ * 照常服务** —— 注入时"眼"是睁着的。
+ *
+ * 不引入 job 状态机/轮询端点:**判据本来就是盘上的标记文件**
+ * (INJ.TXT / CAP.TXT),agent 直接回读即可。
+ */
+#define IO_JOB_TEXT_MAX      256
+#define IO_JOB_KIND_TEXT     1
+#define IO_JOB_KIND_MACRO    2
+/* type 超过这个长度就算长动作(按 60ms/字算,约 1s) */
+#define IO_JOB_TYPE_ASYNC_CHARS 16
+
+typedef struct {
+    int  kind;
+    char text[IO_JOB_TEXT_MAX];
+} io_job_t;
+
+static QueueHandle_t  s_job_q;
+/* 单例槽用**二值信号量**而不是 mutex:槽会跨任务交接(httpd task 取,
+ * worker task 还),mutex 有"必须由持有者释放"的限制,二值信号量没有。 */
+static SemaphoreHandle_t s_op_sem;
+static volatile bool   s_op_busy;    /* 仅用于对外报告状态 */
+
+/* 抢单例槽:抢到返回 true,忙则 false(不等待、不排队)。 */
+static bool op_slot_try(void)
+{
+    if (!s_op_sem || xSemaphoreTake(s_op_sem, 0) != pdTRUE) {
+        return false;
+    }
+    s_op_busy = true;
+    return true;
+}
+
+static void op_slot_release(void)
+{
+    s_op_busy = false;
+    if (s_op_sem) {
+        xSemaphoreGive(s_op_sem);
+    }
+}
+
+static void io_job_task(void *arg)
+{
+    io_job_t job;
+    (void)arg;
+    for (;;) {
+        if (xQueueReceive(s_job_q, &job, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+        switch (job.kind) {
+        case IO_JOB_KIND_TEXT:
+            (void)io_hid_type_text(job.text, IO_HID_KEY_HOLD_MS);
+            break;
+        case IO_JOB_KIND_MACRO:
+            if (!strcmp(job.text, "selftest")) {
+                (void)io_launcher_run_selftest();
+            } else if (!strcmp(job.text, "launch_watcher")) {
+                (void)io_launcher_run_launch();
+            } else if (!strcmp(job.text, "focus_reset")) {
+                (void)io_launcher_focus_reset();
+            } else {
+                ESP_LOGW(TAG, "unknown macro: %s", job.text);
+            }
+            break;
+        default:
+            break;
+        }
+        op_slot_release();    /* 释放单例槽 */
+    }
+}
 
 /* ------------------------------------------------------------------ */
 /* 小工具                                                               */
@@ -207,6 +292,9 @@ static cJSON *tool_device_info(void)
     cJSON_AddBoolToObject(hid, "endpoint_ready", io_hid_ready());
     cJSON_AddBoolToObject(hid, "layout_ok", io_hid_layout_selfcheck());
     cJSON_AddItemToObject(o, "hid", hid);
+
+    /* 单例槽状态:agent 轮询它就知道后台动作跑完没有 */
+    cJSON_AddBoolToObject(o, "busy", s_op_busy);
 
     uint32_t count = 0;
     const io_slot_desc_t *tbl = io_disk_slot_table(&count);
@@ -361,32 +449,30 @@ static esp_err_t act_run(const cJSON *args, cJSON *detail)
         return io_hid_mouse_scroll((int8_t)dy->valuedouble);
     }
     if (!strcmp(a, "macro")) {
-        const cJSON *m = cJSON_GetObjectItem(args, "macro");
-        if (!cJSON_IsString(m)) {
-            return ESP_ERR_INVALID_ARG;
-        }
-        cJSON_AddStringToObject(detail, "macro", m->valuestring);
-        if (!strcmp(m->valuestring, "focus_reset")) {
-            return io_launcher_focus_reset();
-        }
-        if (!strcmp(m->valuestring, "selftest")) {
-            /* 自检:INJ.TXT 出现才算注入链路真的到达了目标机 */
-            const esp_err_t rc = io_launcher_run_selftest();
-            cJSON_AddBoolToObject(detail, "marker_seen", rc == ESP_OK);
-            return rc;
-        }
-        if (!strcmp(m->valuestring, "launch_watcher")) {
-            /* 拉起:CAP.TXT 出现才算 watcher 真的起来了 */
-            const esp_err_t rc = io_launcher_run_launch();
-            cJSON_AddBoolToObject(detail, "marker_seen", rc == ESP_OK);
-            return rc;
-        }
+        /* 宏一律走 worker task(长动作),不在 httpd task 里执行 ——
+           否则会把 httpd 唯一的 task 占住,busy 语义就无从谈起。
+           见文件头的"单例执行槽 + worker task"。 */
         return ESP_ERR_INVALID_ARG;
     }
     return ESP_ERR_INVALID_ARG;
 }
 
-/* act 工具:单次执行,零重试;注入前后各观察一次,让 agent 自己判定生效。 */
+/*
+ * act 工具:单次执行、零重试(失败不自动重发)。
+ *
+ * 同步模型(2026-10-23):
+ *   - **短动作**(tap/hotkey/move/click/scroll/短 type)在 httpd task 里直接执行,
+ *     返回执行结果。
+ *   - **长动作**(macro 注入类、超过 16 字符的 type)派给 **worker task**,
+ *     本次请求**立刻回 accepted**;结果由 agent 回读盘上的标记文件
+ *     (INJ.TXT / CAP.TXT)判定 —— 标记文件本来就是状态,不需要 job 状态机。
+ *   - 设备是**单例**:同一时刻只跑一个动作。忙时再来一个动作请求 →
+ *     **直接回 busy**,不排队执行。
+ *   - 读类工具(observe / watcher/status / device/info)在动作执行期间**照常服务**。
+ *
+ * 注意:动作不再自动回传"注入前后两张截图"。异步模型下"后一张"没有意义
+ * (请求早就返回了),由 agent 自己用 observe 取前后帧来比对。
+ */
 static cJSON *tool_act(const cJSON *args)
 {
     cJSON *out = cJSON_CreateObject();
@@ -403,35 +489,86 @@ static cJSON *tool_act(const cJSON *args)
         return out;
     }
 
-    const cJSON *verify = cJSON_GetObjectItem(args, "verify");
-    const bool do_verify = !cJSON_IsFalse(verify);
-    const cJSON *delay = cJSON_GetObjectItem(args, "delay_ms");
-    const uint16_t delay_ms = cJSON_IsNumber(delay) ? (uint16_t)delay->valuedouble : 700;
-
-    cJSON *before = NULL;
-    if (do_verify) {
-        before = observe_snapshot("SNAP_P.JPG", "preview-before");
-        cJSON_AddItemToObject(out, "before", before);
+    const cJSON *action = cJSON_GetObjectItem(args, "action");
+    if (!cJSON_IsString(action)) {
+        cJSON_AddBoolToObject(out, "ok", false);
+        cJSON_AddStringToObject(out, "error", "missing action");
+        return out;
     }
+    const char *a = action->valuestring;
+    const cJSON *text = cJSON_GetObjectItem(args, "text");
+    const bool is_macro = !strcmp(a, "macro");
+    const bool long_type = (!strcmp(a, "type") && cJSON_IsString(text) &&
+                            strlen(text->valuestring) > IO_JOB_TYPE_ASYNC_CHARS);
 
     cJSON *detail = cJSON_CreateObject();
+    io_job_t job;
+    memset(&job, 0, sizeof(job));
+
+    if (is_macro) {
+        /* 宏名先校验,别把不认识的宏塞进队列 */
+        const cJSON *m = cJSON_GetObjectItem(args, "macro");
+        if (!cJSON_IsString(m) || !m->valuestring[0]) {
+            cJSON_Delete(detail);
+            cJSON_AddBoolToObject(out, "ok", false);
+            cJSON_AddStringToObject(out, "error", "missing macro");
+            return out;
+        }
+        if (strcmp(m->valuestring, "selftest") &&
+            strcmp(m->valuestring, "launch_watcher") &&
+            strcmp(m->valuestring, "focus_reset")) {
+            cJSON_Delete(detail);
+            cJSON_AddBoolToObject(out, "ok", false);
+            cJSON_AddStringToObject(out, "error", "unknown macro");
+            return out;
+        }
+        job.kind = IO_JOB_KIND_MACRO;
+        snprintf(job.text, sizeof(job.text), "%s", m->valuestring);
+        cJSON_AddStringToObject(detail, "macro", m->valuestring);
+    } else if (long_type) {
+        job.kind = IO_JOB_KIND_TEXT;
+        snprintf(job.text, sizeof(job.text), "%s", text->valuestring);
+        cJSON_AddStringToObject(detail, "typed", text->valuestring);
+    }
+
+    /* 参数都校验过了,这时才抢单例槽:忙就直接回 busy,不排队执行 */
+    if (!op_slot_try()) {
+        cJSON_Delete(detail);
+        cJSON_AddBoolToObject(out, "ok", false);
+        cJSON_AddBoolToObject(out, "busy", true);
+        cJSON_AddStringToObject(out, "error", "device busy (another action is running)");
+        return out;
+    }
+
+    if (is_macro || long_type) {
+        /* ---- 长动作:派给 worker,立刻回 accepted(不等结果) ---- */
+        if (xQueueSend(s_job_q, &job, 0) != pdTRUE) {
+            op_slot_release();
+            cJSON_Delete(detail);
+            cJSON_AddBoolToObject(out, "ok", false);
+            cJSON_AddStringToObject(out, "error", "job queue full");
+            return out;
+        }
+        /* 槽由 worker 在动作跑完后释放 */
+        cJSON_AddItemToObject(out, "action", detail);
+        cJSON_AddBoolToObject(out, "ok", true);
+        cJSON_AddBoolToObject(out, "accepted", true);
+        cJSON_AddBoolToObject(out, "busy", true);
+        cJSON_AddStringToObject(out, "note",
+                               "accepted and running in background; poll device/info "
+                               "(busy=false) then read the marker file (INJ.TXT / "
+                               "CAP.TXT) to judge the outcome");
+        return out;
+    }
+
+    /* ---- 短动作:同步执行 ---- */
     const esp_err_t rc = act_run(args, detail);
+    op_slot_release();
+
     cJSON_AddItemToObject(out, "action", detail);
     cJSON_AddBoolToObject(out, "ok", (rc == ESP_OK));
     if (rc != ESP_OK) {
         cJSON_AddStringToObject(out, "error", esp_err_to_name(rc));
-        return out;   /* 失败不重试、不补观察 */
-    }
-
-    /* 等目标机上的 watcher 刷出新帧 */
-    vTaskDelay(pdMS_TO_TICKS(delay_ms));
-
-    if (do_verify) {
-        cJSON *after = observe_snapshot("SNAP_P.JPG", "preview-after");
-        cJSON_AddItemToObject(out, "after", after);
-        cJSON_AddStringToObject(out, "note",
-                               "compare the two frames yourself: that is the real "
-                               "proof the injection landed, not this tool's log");
     }
     return out;
 }
@@ -507,6 +644,7 @@ static cJSON *tool_watcher_status(void)
 static cJSON *tool_deploy_payload(const cJSON *args)
 {
     cJSON *o = cJSON_CreateObject();
+
     const cJSON *slot = cJSON_GetObjectItem(args, "slot");
     const uint32_t slot_index = cJSON_IsNumber(slot) ? (uint32_t)slot->valuedouble : 0;
 
@@ -547,7 +685,17 @@ static cJSON *tool_deploy_payload(const cJSON *args)
         len = (size_t)n;
     }
 
+    /* 写 flash 也是**原子操作** → 走单例槽:忙就直接回 busy,不排队执行。
+     * 放在参数都校验完之后、真正写之前,免得中途早退把槽漏掉。 */
+    if (!op_slot_try()) {
+        heap_caps_free(buf);
+        cJSON_AddBoolToObject(o, "ok", false);
+        cJSON_AddBoolToObject(o, "busy", true);
+        cJSON_AddStringToObject(o, "error", "device busy (another action is running)");
+        return o;
+    }
     const esp_err_t rc = io_payload_store(slot_index, buf, len);
+    op_slot_release();
     heap_caps_free(buf);
 
     cJSON_AddBoolToObject(o, "ok", (rc == ESP_OK));
@@ -637,14 +785,16 @@ static cJSON *build_tools_list(void)
         cJSON_AddItemToObject(p, "dx", tool_schema_num("mouse dx (action=move)"));
         cJSON_AddItemToObject(p, "dy", tool_schema_num("mouse dy (action=move/scroll)"));
         cJSON_AddItemToObject(p, "button", tool_schema_str("left|right|middle (action=click)"));
-        cJSON_AddItemToObject(p, "macro", tool_schema_str("focus_reset | launch_watcher"));
-        cJSON_AddItemToObject(p, "hold_ms", tool_schema_num("key hold time, default 30"));
-        cJSON_AddItemToObject(p, "delay_ms", tool_schema_num("ms to wait before the 'after' snapshot, default 700"));
-        cJSON_AddItemToObject(p, "verify", tool_schema_obj("boolean; set false to skip the before/after snapshots"));
+        cJSON_AddItemToObject(p, "macro", tool_schema_str("focus_reset | selftest | launch_watcher"));
+        cJSON_AddItemToObject(p, "hold_ms", tool_schema_num("key hold time, default 60"));
         add_tool(tools, "act",
                  "Inject ONE action on the host. Single execution, never retried. "
-                 "Returns a before/after snapshot URL pair so you can verify the "
-                 "effect yourself.",
+                 "Long actions (macro / long text) are accepted and run in background: "
+                 "the reply is {\"accepted\":true,\"busy\":true} and the outcome is "
+                 "judged by the marker file (INJ.TXT / CAP.TXT) -- poll device/info "
+                 "until busy=false, then observe the marker. Short actions run inline. "
+                 "If another action is already running the reply is {\"busy\":true} "
+                 "(the device is a singleton; it never queues actions).",
                  p, "action");
     }
     {
@@ -810,16 +960,26 @@ static esp_err_t http_mcp_post(httpd_req_t *req)
             return ESP_FAIL;
         }
         int got = 0;
+        int timeouts = 0;
         while (got < (int)req->content_len) {
             const int r = httpd_req_recv(req, body + got, req->content_len - got);
             if (r <= 0) {
-                if (r == HTTPD_SOCK_ERR_TIMEOUT) {
+                /*
+                 * 超时要**有上限**:httpd 只有一个 task,这里死循环 = 整个
+                 * HTTP 服务永久卡死(症状:设备还活着,但新连接被拒/挂死)。
+                 * 客户端发一半 body 就静默时就会踩到。
+                 */
+                if (r == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 3) {
                     continue;
                 }
                 free(body);
-                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "recv failed");
+                httpd_resp_send_err(req,
+                                    timeouts ? HTTPD_408_REQ_TIMEOUT
+                                             : HTTPD_400_BAD_REQUEST,
+                                    "recv failed");
                 return ESP_FAIL;
             }
+            timeouts = 0;
             got += r;
         }
         body[got] = '\0';
@@ -953,6 +1113,23 @@ esp_err_t io_mcp_start(void)
             ESP_LOGE(TAG, "blob cache alloc failed");
             return ESP_ERR_NO_MEM;
         }
+    }
+
+    /* 单例槽 + worker task(长动作移出 httpd task,见文件头注释) */
+    s_op_sem = xSemaphoreCreateBinary();
+    if (!s_op_sem) {
+        ESP_LOGE(TAG, "op semaphore alloc failed");
+        return ESP_ERR_NO_MEM;
+    }
+    xSemaphoreGive(s_op_sem);      /* 初始为空闲 */
+    s_job_q = xQueueCreate(1, sizeof(io_job_t));
+    if (!s_job_q) {
+        ESP_LOGE(TAG, "job queue alloc failed");
+        return ESP_ERR_NO_MEM;
+    }
+    if (xTaskCreate(io_job_task, "io_job", 4096, NULL, 5, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "job task create failed");
+        return ESP_ERR_NO_MEM;
     }
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
