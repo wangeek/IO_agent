@@ -171,13 +171,23 @@ IO_agent/
 
 ### M2 注入链路
 - HID 键盘/鼠标注入;**动作序列本地定时执行**(<10ms/步,禁止逐条 WiFi 往返)。
-- `focus_reset` 宏:**IME 归零(Shift 点切 EN)→ Win+M → Win+R**(N4,中文输入法是头号杀手)。
+- `focus_reset` 宏(2026-10-23 实测重定案):**`Win+M` → `Win+R` → `Ctrl+Space` → `Shift` → `Ctrl+A`**,每步之间 500ms。
+  - **keycode 是 HID 用法 ID,不是 ASCII**:传 `'R'`(0x52)会按成小键盘的键 —— 组合键从来没生效过
+    (`io_hid_keycode_for_letter()` 负责字母 → keycode)。
+  - **组合键按住 ≥600ms**:30ms 会被 Windows 整段丢弃(实测 `Win+R` 打不开运行框)。
+  - **单键按住 ≥60ms**:8ms 时微软拼音处理不过来,输入被打成乱码(`ni hao ` → 49 个"啊")。
+  - **IME 必须强制且状态无关**:`Shift` 是状态相关 toggle(中→英 或 英→中);
+    `Ctrl+Space`(开/关输入法)+ `Shift`(中/英切换)两步走,三种初始态(开+中/开+英/关)实测终点都是纯 ASCII。
+  - **运行框会预填历史命令**(且不是选中态)→ 必须先 `Ctrl+A` 全选,否则命令被追加成废命令。
 - **注入的启动命令按卷标解析,禁止写死盘符**(2026-10-22 定案,见
   `output-channel-design.md` §四 L1)。dongle 拔线即整机断电,重入是冷启动,
   Windows 可能分配到别的盘符 → 写死 `X:\` 的命令在重入后必然失效。
   命令形态:`cmd /c for %d in (I O A G E N T) do @if exist %d:\WATCH.PS1 start "" powershell -ExecutionPolicy Bypass -WindowStyle Hidden %d:\WATCH.PS1`
   → 纯 cmd 内建语法,无 `Get-Volume` 之类的可选模块依赖。
 - 验收:自动化脚本注入含 Shift/特殊字符的文本,主机侧逐字节一致;时序抖动 <10ms/步。
+- **远程自检宏 `macro=selftest`(2026-10-23 新增)**:注入一条把标记写回盘的命令,
+  设备以盘上是否出现 `INJ.TXT` 判定"HID 真的到达了目标机"(`marker_seen`)。
+  设备自己看不到目标机屏幕,这是唯一能区分"命令发出去了"和"命令执行了"的客观判据。
 
 ### M3 watcher 通路(目标机侧)
 - HID 敲 `Win+R` → 注入**按卷标解析**的启动命令(见 M2 / `output-channel-design.md` §四 L1)拉起驻守。
@@ -185,7 +195,9 @@ IO_agent/
   未出现则 2s 间隔重试注入,最多 5 次。这条同时给 agent 提供 watcher 存活信号。
 - 盘符自扫(不假设 X:);`SNAP_P`/`SNAP_A` + `SNAP.IDX` 双缓冲防撕裂;
   `CMD\` / `RESP\` 命令与响应;幂等键沿用 v1 约定。
-- **进程自检退出**:写盘失败(盘消失)即判定载体丢失 → 主动退出,不残留。
+- **进程自检退出**:载体丢失(**卷目录消失**)即判定失联 → 主动退出,不残留。
+  写盘**失败**但卷还在(设备正在读盘导致的撞车)→ **先重试**(最多 5 轮),
+  不再一失败就退(2026-10-23 实测:曾出现"跑两帧就没了")。
   (代价:dongle 重入后 watcher 已死,必须靠设备重新拉起 —— 上面的闭环就是为此。)
 - 验收:拔盘 5s 内进程自行退出;连续 2fps 取帧 10 分钟,无花屏帧入库。
 
@@ -232,6 +244,7 @@ IO_agent/
 | 12 | **注入默认关,只走远程显式触发(2026-10-22)** | 往用户机器注入按键是**对用户环境的破坏性操作**:目标机若处于锁屏,那些按键会被锁屏界面当成 PIN 输入,持续失败会触发账户防暴力锁定(实测事故)。因此 `IO_LAUNCHER_AUTOSTART` **默认 0**(编译期开关),开机不再自动拉起 watcher;注入只能由远程 `act` 工具**单次触发、零重试**。失败不自动重发 —— 重试对"打系统快捷键"这类动作是持续破坏。**验收纪律:能控制用户机器的能力,验收放虚拟机/专用靶机;在主力机上做只能"人在场 + 知情 + 手动单次触发"。** 详见 `agent-interface-mcp.md` §二之三 |
 | 13 | **M5 远程链路落地(2026-10-22)** | 设备侧先起 **HTTP + JSON-RPC 2.0**(`POST /mcp`、`GET /ping`、`GET /blob/b0..3`),凭据走 NVS、**用 UART0 控制台配网**(凭据不进仓库、不进固件二进制)。5 个工具:`device/info` / `act` / `observe` / `watcher/status` / `deploy_payload`。**当前是明文 HTTP,mDNS 发现与 TLS-PSK 双向鉴权待做**(IDF 5.5 无内置 mDNS 组件、esp-mdns 需组件管理器,与"离线可复现"冲突 → 候选:a) 开 `CONFIG_LWIP_MDNS_RESPONDER` 用 lwIP 原生 mdns;b) vendored esp-mdns)。验收方式用**裸 HTTP 构造**(不依赖 MCP 客户端),`tools/mcp_probe.py` |
 | 14 | **HID 描述符约束(2026-10-22)** | ① **不能加 Output Report(键盘 LED 回写)**:即便 Usage Page 写对(LED 属 0x08 LEDs Page),Windows 的 HidUsb 仍会启动失败(`USB Input Device` 节点 `ProblemCode=10`),整个 HID 接口不可用 —— 而 M1 时代没有它时枚举正常。规范上 Boot Keyboard 该有 Output Report,这是**待补项**,加之前必须先在 Windows 上把 SET_REPORT 应答路径验通。② **改 HID 报告描述符必须 bump 序列号后缀**(`IO_USB_SERIAL_SUFFIX`):Windows 按 VID/PID/序列号识别设备实例,序列号不变就**复用旧的失败实例、从不重新解析**,表现为"改了没生效"。③ **"枚举出键盘节点" ≠ "输入能到达主机"** —— HID 可用性的验收项必须是"按键真的到达了目标应用" |
+| 15 | **注入序列与时序定案(2026-10-23)** | 实测标定,四条硬事实:① **HID keycode 是用法 ID 不是 ASCII** —— 传字符 `'R'`(0x52)会按成小键盘上的键,`Win+R`/`Ctrl+A` 从来没触发过(**这才是"运行框不打开"的真因**,不是 USB 枚举也不是 IME);字母一律走 `io_hid_keycode_for_letter()`。② **组合键按住 ≥600ms**:30ms 会被 Windows 整段丢弃。③ **单键/逐字符按住 ≥60ms**:8ms 时微软拼音把输入打成乱码(`ni hao ` → 49 个"啊")。④ **IME 强制必须状态无关**:`Shift` 是状态相关 toggle,`Ctrl+Space`+`Shift` 两步走(三种初始态实测终点都是纯 ASCII);运行框还会**预填历史命令**(非选中态)→ 必须先 `Ctrl+A`。配套:`act` 支持**命名键**(SHIFT/ENTER/ESC/…)、新增 `macro=selftest`,以盘上 `INJ.TXT` 作为"HID 真的到达了目标机"的客观判据(`marker_seen`) |
 
 ## 四、契约冻结清单(改一处同步四处)
 

@@ -19,7 +19,7 @@
 | M1 固件最小可枚举 | ✅ | 复合设备在 Windows 上同时枚举出 **键盘 + 鼠标 + 可移动磁盘**;E: 盘读写字节级一致;端点占用 3 个(IN 侧 2) |
 | M1 拔插不崩 | ✅ | 实测 ABSENT→PRESENT 完整循环:主机侧消失/重现,**固件侧无复位**(uptime 连续)、链路掉线/恢复均被观测到、重新枚举成功 |
 | T2 运行时下发(2026-10-22) | ✅ | 出厂镜像**不再内嵌** `watch.ps1`,只留 3 个设备管理槽 + 1 个宿主信箱(**槽位容量在固件里占 0 字节**);内容落 flash `script0`/`script1` A/B 快照(断电不丢),经 `PAYLOAD.BIN` 信箱下发(M5 后 MCP `deploy_payload` 直接调同一 API)。**真源/副本契约:flash 是唯一真源(宿主够不到),RAM disk 槽位只在开机时铺开;运行期下发只写 flash** → 与宿主零竞争。实板双槽 A/B 验收 **17 项全绿** |
-| M2 注入链路(2026-10-22) | ✅ | 设备端 HID 注入打通:**远程 `act` 单次触发,Win+R 实测在主机上打开了运行框**(客观判据=枚举 Windows 顶层窗口标题)。US 布局表(95 字符)带自检 + 仓库内独立交叉校验脚本 `tools/check_us_layout.py`。**注入默认关**,只走远程显式触发(见决策表) |
+| M2 注入链路(2026-10-23 复测) | ✅ | 设备端 HID 注入**端到端打通并客观验收**:远程 `act macro=selftest` → 设备走完注入序列 → 目标机执行命令把 `INJECT_OK` 写回盘 → 设备在盘上看到 `INJ.TXT`(`marker_seen:true`);再 `act macro=launch_watcher` → `CAP.TXT` 出现、watcher 起帧(~2.2 fps)、设备经 `/blob` 回传**真实桌面帧**。US 布局表(95 字符)带自检 + 仓库内独立交叉校验脚本 `tools/check_us_layout.py`。**注入默认关**,只走远程显式触发(见决策表) |
 | M5 远程链路(2026-10-22) | ✅ | 设备侧 MCP server 落地(HTTP + JSON-RPC 2.0):`/mcp` + `/ping` + `/blob/b0..3`,5 个工具(`device/info`/`act`/`observe`/`watcher/status`/`deploy_payload`)。实测闭环:远程下发 → flash → 开机 overlay → 设备只读解析 → HTTP 回传 **sha256 逐字节一致**;`act(hotkey win+r)` 目标机窗口列表新增「运行」。凭据走 NVS + UART0 控制台配网(**不进仓库/不进固件**)。mDNS 与 TLS-PSK 待做 |
 
 - **实板**:DevKitC-1-N16R8(Flash 16MB + Octal PSRAM 8MB,esptool 实测确认)。
@@ -51,8 +51,24 @@
 | 构建/依赖 | **离线可复现**:esp_tinyusb 2.4.0 + tinyusb 0.21.0~2 **vendored** 到 `firmware/components/`,禁用 IDF 组件管理器(`set(ENV{IDF_COMPONENT_MANAGER} 0)`)。IDF 子模块用 `tools/fetch_idf_submodules.py` 走 **GitHub codeload tarball** 离线抓取并做逐文件 SHA-1 校验 —— 本机代理 `127.0.0.1:7897` 会随机截断 git smart-HTTP 与大文件,`git clone` 不可靠(vendored 组件的 3 处补丁见 `firmware/components/README-vendor-patches.md`) |
 | RAM disk 体积 | **出厂镜像用稀疏格式 + 槽位化(2026-10-22)**：卷容量由 BPB 声明(4MB),镜像文件只写到最后一个已用扇区(**97 扇区 / 49,664 B**),固件启动时在 PSRAM 开满 4MB 卷并把尾部补零 → 内嵌镜像 **4MB → 48KB**,`io_agent.bin` **约 4.42MB → 884,176 B**。宿主看到的仍是完整 4MB 可移动卷(实测 `size=4,144,640`),设备端依然零 FAT 逻辑。**"AI 现场就能生成的启动文件"不占固件位置** —— 出厂镜像只留薄引导槽:3 个设备管理槽(`WATCH.PS1` 32K / `AGENT.SH` 32K / `AGENT.EXE` 64K)+ 1 个宿主信箱(`PAYLOAD.BIN` 128K),**槽位簇从卷末尾往前分配**,簇链与目录项进镜像、**簇内容不进镜像** → 槽位容量在固件里占 **0 字节** |
 | Flash 分区 | `nvs`24K / `phy_init`4K / `otadata`8K / `ota_0` **2MB** / `ota_1` **2MB** / `script0`512K / `script1`512K / 余 10.9MB。OTA 双槽从 6MB 缩到 2MB(app 实占 **884,176 B**,余 1,212,976 B(57.8%);`script0/1` 是 T2 的运行时 payload 仓(A/B),断电不丢 |
-| watcher 启动 | **按卷标解析,不写死盘符(2026-10-22)**:dongle 拔线即断电,重入后盘符可能变。设备 HID 敲 `Win+R` 注入 `cmd /c for %d in (I O A G E N T) do @if exist %d:\WATCH.PS1 start "" powershell -ExecutionPolicy Bypass -WindowStyle Hidden %d:\WATCH.PS1`,注入后轮询 RAM disk 里的 `CAP.TXT` 判定拉起成功,未出现则 2s 间隔重试(最多 5 次) |
-| 注入触发方式 | **默认关,只走远程显式触发(2026-10-22 事故后定案)**。往用户机器注入按键是**破坏性操作**:目标机若在锁屏,按键会被当成 PIN 输入 → 持续失败 → 触发账户防暴力锁定(实测事故)。因此 `IO_LAUNCHER_AUTOSTART` 默认 **0**(开机不自动拉起),注入只能由远程 `act` **单次触发、零重试**(失败不自动重发 —— 对"打系统快捷键"这类动作,重试=持续破坏)。`act` 默认回传注入**前后两张截图 URL**,由 agent 自己判定生效。验收放虚拟机/靶机;主力机上只能"人在场 + 知情 + 手动单次触发" |
+| watcher 启动 | **按卷标解析,不写死盘符(2026-10-22)**:dongle 拔线即断电,重入后盘符可能变。设备注入 `cmd /c for %d in (I O A G E N T) do @if exist %d:\WATCH.PS1 start "" powershell -ExecutionPolicy Bypass -WindowStyle Hidden %d:\WATCH.PS1`,注入后轮询 RAM disk 里的 `CAP.TXT` 判定拉起成功,未出现则 2s 间隔重试(最多 5 次)。**注入前必做 `focus_reset`(见下行「注入序列」)** |
+| 注入序列(2026-10-23 实测定案) | `Win+M` → `Win+R` → `Ctrl+Space` → `Shift` → `Ctrl+A` → 打字 → `Enter`,每步之间 500ms。四个关键点:**① keycode 是 HID 用法 ID 不是 ASCII** —— 传 `'R'`(0x52)会按成小键盘的键,`Win+R` 根本不触发(这个 bug 让组合键从来没生效过);字母要用 `io_hid_keycode_for_letter()`。**② 组合键必须按住 ≥600ms** —— 30ms 会被 Windows 整段丢弃。**③ 单键必须按住 ≥60ms** —— 8ms 时微软拼音把输入打成乱码(`ni hao ` 变成 49 个"啊")。**④ IME 必须强制**:Shift 是**状态相关**的 toggle(中→英 或 英→中),单按一次结果取决于注入前是什么态;`Ctrl+Space`(开/关输入法)+ `Shift`(中/英切换)两步走,终点一定是纯 ASCII 态(三种初始态都实测过)。**⑤ 运行框会预填历史命令**(且不是选中态) → 必须先 `Ctrl+A` 全选,否则我们的命令被追加在它后面变成废命令 |
+| 注入触发方式 | **默认关,只走远程显式触发(2026-10-22 事故后定案)**。往用户机器注入按键是**破坏性操作**:目标机若在锁屏,按键会被当成 PIN 输入 → 持续失败 → 触发账户防暴力锁定(实测事故)。因此 `IO_LAUNCHER_AUTOSTART` 默认 **0**(开机不自动拉起),注入只能由远程 `act` **单次触发、零重试**(失败不自动重发 —— 对"打系统快捷键"这类动作,重试=持续破坏)。`act` 默认回传注入**前后两张截图 URL**,由 agent 自己判定生效。验收放虚拟机/靶机;主力机上只能"人在场 + 知情 + 手动单次触发"。**远程另给 `macro=selftest`**:注入一条把标记写回盘的命令,设备以盘上是否出现 `INJ.TXT` 判定"HID 真的到达了目标机"(`marker_seen`)——设备自己看不到屏幕,这是唯一客观判据 |
+
+## 后期实现项(2026-10-23 记下,以后实现)
+
+| # | 项目 | 现状 / 要点 |
+|---|---|---|
+| P1 | `act` 改**受理 + 轮询**,不再阻塞 httpd 单 task | 现在一次注入(Win+M/Win+R/IME/打字 ~110 字 @60ms/回车)约 **10s**,期间 httpd 只有一个 task → **所有 HTTP 连接全卡住**。改成"立刻受理 → 返回 job id → 另开 `act/status` 轮询" |
+| P2 | 请求路径硬化 | ① body 大小上限(现在没限)② `Content-Type` 不对要回 **415** ③ `Origin` + `Host` 必须绑定设备 IP / mDNS 名(**DNS rebinding** 防护) |
+| P3 | 设备侧鉴权 | 明文 HTTP 下**局域网任意主机当前都能调 `act`**(注入是破坏性操作)。用 PSK token 头;与 TLS-PSK 双向鉴权一起做 |
+| P4 | 协议细节 | ① 协议版本**协商**(现在固定 `2025-06-18`)② **别发假的 session id**(现在硬编码 `Mcp-Session-Id: ioagent-1`)→ 改无状态 |
+| P5 | mDNS 发现 + TLS-PSK 双向鉴权(M5 收尾) | IDF 5.5 **没有内置 mDNS 组件**(esp-mdns 在组件管理器里,与"关组件管理器 + 离线可复现"冲突)。候选:开 `CONFIG_LWIP_MDNS_RESPONDER` 用 lwIP 原生 mdns,或 vendored esp-mdns |
+| P6 | 不依赖 IME 的 bootstrap 通道 | IME 强制序列(`Ctrl+Space` + `Shift`)**只对微软拼音成立**,其它输入法未验证;且 **agent 不在目标机上时无法回读 IME 状态**(回读靠 agent 或 watcher,watcher 又要靠注入拉起 → 循环)。需要一条"不经过 IME 的引导命令"(如只含符号的 Alt+numpad 序列,或换一条不走文本框的通道) |
+| P7 | 注入命令的落地方式 | 当前命令走 **Win+R 文本框**(要处理 IME、历史预填、运行框行为)。长期更稳的做法:命令先由设备落到盘上,目标机侧用**一次性启动器**执行,输入面尽量小 |
+| P8 | 主机侧 watcher 的并发写 | 设备读盘(observe)与宿主写帧撞车会让写失败 → watcher 曾"跑两帧就死"。已加**重试 + 只有卷目录消失才退出**,并发是否彻底消除待观察 |
+| P9 | Windows 旧设备实例 | `pnputil /remove-device` 报 Access denied(需管理员),旧的 Error 实例仍在(不影响新实例) |
+| P10 | 协议层主机侧单测 | 目前没有本地 unit test,每次验证都得烧板或跑实板脚本 |
 
 ## 已知硬约束
 

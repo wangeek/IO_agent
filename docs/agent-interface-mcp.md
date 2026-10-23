@@ -157,7 +157,16 @@ Windows 账户防暴力锁定(实测事故:设备每 3 秒重试一轮,目标机
   `DIFF.IDX`),**设备不解码、不比对,只搬运**(哑设备原则);`target` 传任意 8.3 文件名
   时直接读根目录里那个文件(也能用来验证 `find_file`/`read_file`)。
 - **`act`** 动作:`type` / `tap` / `hotkey` / `move` / `click` / `scroll` /
-  `macro(focus_reset | launch_watcher)`。链路不可用时直接报错,不盲发。
+  `macro(focus_reset | selftest | launch_watcher)`。链路不可用时直接报错,不盲发。
+  - `tap` / `hotkey` 的 `key` **既接受可打印字符,也接受命名键**
+    (`SHIFT` / `CTRL` / `ALT` / `WIN` / `ENTER` / `ESC` / `SPACE` / `TAB` /
+    `BACKSPACE` / `DELETE`)。命名键是必需的:微软拼音的中英切换只在**单独**按
+    Shift 时触发,字符表(只有可打印 ASCII)发不出"裸 Shift"。
+  - 时序默认值:**组合键按住 600ms、单键 60ms、逐字符 60ms**(实测标定,
+    见 `implementation-plan.md` §M2);`hold_ms` / `per_char_ms` 可覆盖。
+  - `macro=selftest` 注入一条把标记写回盘的命令,返回 `marker_seen`
+    (盘上出现 `INJ.TXT` = HID 真的到达了目标机);`macro=launch_watcher` 同理
+    返回 `marker_seen`(盘上出现 `CAP.TXT` = watcher 真的起来了)。
 - **`deploy_payload`** 落 flash,**下次开机生效**(真源/副本契约)。
 
 **当前实现状态**:明文 HTTP;凭据在 NVS,**用 UART0 控制台配网**
@@ -201,7 +210,7 @@ Windows 账户防暴力锁定(实测事故:设备每 3 秒重试一轮,目标机
 | N1 ROI 一等公民 | 采纳 | 裁剪在 **watcher** 做(有真像素),ESP32 不解码 JPEG |
 | N2 帧差只回传变化区 | 采纳,**位置修正** | diff 在 **watcher** 计算。原提案"固件侧"与哑设备定位矛盾(解码+逐像素比对是内容级工作);ESP32 只搬运 diff 清单 |
 | N3 act 后帧差验证闭环 | 采纳 | MCP 标准流;杜绝盲注入 |
-| N4 注入前置宏 | 采纳,**扩充** | `focus_reset` = **IME 归零(Shift 点切 EN)** → Win+M → Win+R。中文输入法会把 HID 字母吃进组合窗(高危,提案未覆盖);宏参数化,调用方不自己拼 |
+| N4 注入前置宏 | 采纳,**扩充** | `focus_reset` = **Win+M → Win+R → Ctrl+Space → Shift → Ctrl+A**(2026-10-23 实测重定案)。中文输入法会把 HID 字母吃进组合窗(高危,提案未覆盖);`Ctrl+Space`+`Shift` 两步把 IME 强制到**状态无关**的纯 ASCII 态;`Ctrl+A` 清掉运行框的历史预填。宏参数化,调用方不自己拼 |
 | N5 长命令 base64 -enc | **降级为兜底** | 架构已化解:长内容=盘上文件,命令行恒短(~60 字符);仅无盘异常阶段用打字投递 |
 | N6 多设备编址 | 采纳 | 设备 UUID 走 **mDNS 实例名 + MCP 会话标识**,一机一名(MQTT 方案已随拓扑反转作废) |
 | N7 JPEG 质量可调 | 采纳 | 验收场景 quality≥90 或无损;压缩边界曾被视觉模型误读为"缝隙"(实测教训) |
