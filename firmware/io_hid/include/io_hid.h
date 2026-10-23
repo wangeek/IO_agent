@@ -42,8 +42,24 @@ extern "C" {
 #define IO_HID_KEY_BACKSPACE  0x2A
 #define IO_HID_KEY_TAB        0x2B
 #define IO_HID_KEY_SPACE      0x2C
+#define IO_HID_KEY_DELETE     0x4C
+#define IO_HID_KEY_LEFTCONTROL 0xE0
 #define IO_HID_KEY_LEFTSHIFT  0xE1    /* 左 Shift:作为 keycode 用(IME 中英切换) */
-#define IO_HID_KEY_LEFTGUI    0xE2    /* 左 Win */
+#define IO_HID_KEY_LEFTALT    0xE2
+#define IO_HID_KEY_LEFTGUI    0xE3    /* 注意:0xE2 是 LeftAlt,LeftGUI 是 0xE3 */
+
+/*
+ * 按键保持时长 —— 这两个值是**实测标定**出来的,不是拍脑袋:
+ *
+ *   组合键(modifier + key):30 ms 时 Windows 会把整个组合丢掉。
+ *     实测 30 ms 的 Win+R 根本没打开运行框(焦点重置等于没做);
+ *     700 ms 可靠。组合键每次注入只有两三个,代价可以忽略,取 600 ms 保守值。
+ *
+ *   单键:8 ms 时微软拼音处理不过来,输入被打成乱码
+ *     (实测 "ni hao " 变成 49 个"啊");60 ms 正常。IME 需要时间处理每个键。
+ */
+#define IO_HID_CHORD_HOLD_MS  600
+#define IO_HID_KEY_HOLD_MS    60
 
 /** 鼠标按键位 */
 #define IO_HID_MOUSE_LEFT     0x01
@@ -79,9 +95,23 @@ esp_err_t io_hid_keyboard_tap(uint8_t keycode, uint16_t hold_ms);
 
 /**
  * 组合键:按住 modifier 同时敲 keycode,保持 hold_ms 后全部抬起。
- * 例:io_hid_hotkey(IO_HID_MOD_LGUI, 'R', 50) = Win+R
+ *
+ * ⚠️ keycode 是 **HID 用法 ID**,不是 ASCII 字符!
+ *   字母 a-z 的 keycode 是 0x04..0x1D('a'=0x04,'r'=0x15,'m'=0x1B),
+ *   直接把字符 'R'(0x52)传进来会按成小键盘上的另一个键,组合键不会触发。
+ *   要按字母请用 io_hid_keycode_for_letter()。
+ *
+ * 例:io_hid_hotkey(IO_HID_MOD_LGUI, 0x15, 500) = Win+R
  */
 esp_err_t io_hid_hotkey(uint8_t modifier, uint8_t keycode, uint16_t hold_ms);
+
+/**
+ * 查一个字母的 HID keycode(忽略大小写,**不带** shift 修饰)。
+ *
+ * 组合键要的是"这个键",不是"这个字符":用 'R' 查出来的是 0x15,
+ * 而 'A'/'M'/'R' 这些 ASCII 值(0x41/0x4D/0x52)落在小键盘区,是错的。
+ */
+bool io_hid_keycode_for_letter(char c, uint8_t *key);
 
 /**
  * 文本注入(US 键盘布局,ASCII 0x20..0x7E)。
@@ -105,6 +135,19 @@ bool io_hid_layout_selfcheck(void);
  * 不支持的字符返回 false。
  */
 bool io_hid_key_for_char(char c, uint8_t *mod, uint8_t *key);
+
+/**
+ * 按**名字**查键(修饰键本身也能当键用)。
+ *
+ * 为什么需要:字符表只覆盖可打印 ASCII,而注入链路必须能发出
+ * "裸" Shift / Enter / Esc —— 微软拼音的中英切换就是靠**单独**按一下 Shift
+ * 触发的,带别的键一起按不算(Shift+A 只是输出一个大写字母)。
+ * 所以远程 act 必须能指名按键,而不是只能打可打印字符。
+ *
+ * 支持(大小写不敏感):SHIFT / CTRL / ALT / WIN / ENTER / ESC / SPACE /
+ * TAB / BACKSPACE / DELETE。
+ */
+bool io_hid_key_for_named(const char *name, uint8_t *mod, uint8_t *key);
 
 /** 鼠标相对移动(自动按 ±127 切片)。 */
 esp_err_t io_hid_mouse_move(int16_t dx, int16_t dy);

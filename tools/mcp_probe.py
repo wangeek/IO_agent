@@ -23,7 +23,10 @@ import sys
 import urllib.error
 import urllib.request
 
-TIMEOUT = 12
+# The act tool now runs a full injection sequence (win+M / win+R / IME force /
+# ~110 chars of typing at 60 ms each / enter / marker poll), which takes ~10 s.
+# The HTTP client must outlast that or the probe reports a spurious failure.
+TIMEOUT = 60
 
 
 def http_get(url):
@@ -92,7 +95,13 @@ def main():
         args = {}
         if len(sys.argv) > 3:
             raw = sys.argv[3]
-            if raw.lstrip().startswith("{"):
+            if raw.startswith("@"):
+                # @file: PowerShell strips the double quotes of an inline
+                # JSON argument (the trap that bit this tool twice), so the
+                # reliable way to pass a JSON object is a file.
+                with open(raw[1:], "r", encoding="utf-8") as f:
+                    args = json.load(f)
+            elif raw.lstrip().startswith("{"):
                 args = json.loads(raw)
             else:
                 # 简写:直接给一个字符串参数(避免 PowerShell 传 JSON 时

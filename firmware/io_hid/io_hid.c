@@ -273,6 +273,72 @@ bool io_hid_key_for_char(char c, uint8_t *mod, uint8_t *key)
     return true;
 }
 
+/*
+ * 命名键表:远程 act 按名字发键(修饰键本身也能当键用)。
+ *
+ * 关键点:微软拼音的"中/英文切换"只在**单独**按 Shift 时触发;
+ * Shift+A 只是输出一个大写字母,不算切换。所以必须能指名发一个裸 Shift。
+ */
+static const struct {
+    const char *name;
+    uint8_t key;
+} s_named_keys[] = {
+    { "SHIFT",     IO_HID_KEY_LEFTSHIFT },
+    { "CTRL",      IO_HID_KEY_LEFTCONTROL },
+    { "ALT",       IO_HID_KEY_LEFTALT },
+    { "WIN",       IO_HID_KEY_LEFTGUI },
+    { "ENTER",     IO_HID_KEY_ENTER },
+    { "ESC",       IO_HID_KEY_ESC },
+    { "SPACE",     IO_HID_KEY_SPACE },
+    { "TAB",       IO_HID_KEY_TAB },
+    { "BACKSPACE", IO_HID_KEY_BACKSPACE },
+    { "DELETE",    IO_HID_KEY_DELETE },
+};
+
+static bool ascii_ieq(const char *a, const char *b)
+{
+    while (*a && *b) {
+        char ca = *a++;
+        char cb = *b++;
+        if (ca >= 'a' && ca <= 'z') { ca = (char)(ca - 'a' + 'A'); }
+        if (cb >= 'a' && cb <= 'z') { cb = (char)(cb - 'a' + 'A'); }
+        if (ca != cb) {
+            return false;
+        }
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+bool io_hid_key_for_named(const char *name, uint8_t *mod, uint8_t *key)
+{
+    if (!name || !name[0]) {
+        return false;
+    }
+    for (size_t i = 0; i < sizeof(s_named_keys) / sizeof(s_named_keys[0]); i++) {
+        if (ascii_ieq(name, s_named_keys[i].name)) {
+            if (mod) { *mod = 0; }
+            if (key) { *key = s_named_keys[i].key; }
+            return true;
+        }
+    }
+    return false;
+}
+
+bool io_hid_keycode_for_letter(char c, uint8_t *key)
+{
+    char lower = c;
+    if (lower >= 'A' && lower <= 'Z') {
+        lower = (char)(lower - 'A' + 'a');
+    }
+    if (lower < 'a' || lower > 'z') {
+        return false;
+    }
+    if (key) {
+        *key = (uint8_t)(0x04 + (lower - 'a'));
+    }
+    return true;
+}
+
 bool io_hid_layout_selfcheck(void)
 {
     /* 1) 字母 a-z 必须连续映射到 0x04..0x1D */

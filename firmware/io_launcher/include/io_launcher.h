@@ -39,19 +39,32 @@ extern "C" {
 esp_err_t io_launcher_start(void);
 
 /**
- * focus_reset 宏:IME 归零(Shift 点切)→ Win+M → Win+R。
+ * focus_reset 宏:Win+M → Win+R → Ctrl+Space → Shift。
+ *
+ * 把目标机摆成"能安全接收一条英文命令"的状态:
+ *   - Win+M 最小化所有窗口(桌面上没有遮挡)
+ *   - Win+R 打开运行框
+ *   - Ctrl+Space + Shift 把输入法强制到纯 ASCII 态(状态无关,见实现注释)
  *
  * 供远程 `act` 工具复用。**单次执行,内部零重试**。
  */
 esp_err_t io_launcher_focus_reset(void);
 
 /**
- * 注入"按卷标解析"的 watcher 启动命令(Win+R 框里跑
- * `cmd /c for %d in (I O A G E N T) do @if exist %d:\WATCH.PS1 start ...`)。
+ * 注入自检并等 INJ.TXT 出现。
  *
- * 供远程 `act` 工具复用。**只注入,不做轮询判定**(判定交给调用方)。
+ * INJ.TXT 出现 = HID 注入真的到达了目标机(而不是"命令发出去了")。
+ * 成功返回 ESP_OK,超时返回 ESP_ERR_TIMEOUT。
  */
-esp_err_t io_launcher_inject_watch(void);
+esp_err_t io_launcher_run_selftest(void);
+
+/**
+ * 注入 watcher 启动命令并等 CAP.TXT 出现。
+ *
+ * CAP.TXT 是 watcher 一启动就写的自陈文件,出现 = watcher 真的起来了。
+ * 成功返回 ESP_OK,超时返回 ESP_ERR_TIMEOUT。
+ */
+esp_err_t io_launcher_run_launch(void);
 
 #ifdef __cplusplus
 }

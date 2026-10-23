@@ -250,6 +250,23 @@ static uint8_t parse_modifiers(const cJSON *args)
     return mod;
 }
 
+/*
+ * 解析按键名:先当**名字**(SHIFT/ENTER/ESC/...),再当可打印字符。
+ *
+ * 为什么需要名字:微软拼音的中英切换只在**单独**按 Shift 时触发,而字符表
+ * 只有可打印 ASCII —— 没有名字就发不出"裸 Shift"。
+ */
+static bool resolve_key(const char *name, uint8_t *mod, uint8_t *key)
+{
+    if (!name || !name[0]) {
+        return false;
+    }
+    if (io_hid_key_for_named(name, mod, key)) {
+        return true;
+    }
+    return io_hid_key_for_char(name[0], mod, key);
+}
+
 /* 执行一个动作。返回 ESP_OK / 错误码。 */
 static esp_err_t act_run(const cJSON *args, cJSON *detail)
 {
@@ -259,9 +276,8 @@ static esp_err_t act_run(const cJSON *args, cJSON *detail)
     }
     const char *a = action->valuestring;
     const cJSON *hold = cJSON_GetObjectItem(args, "hold_ms");
-    const uint16_t hold_ms = cJSON_IsNumber(hold) ? (uint16_t)hold->valuedouble : 30;
     const cJSON *per = cJSON_GetObjectItem(args, "per_char_ms");
-    const uint16_t per_char = cJSON_IsNumber(per) ? (uint16_t)per->valuedouble : 8;
+    const uint16_t per_char = cJSON_IsNumber(per) ? (uint16_t)per->valuedouble : IO_HID_KEY_HOLD_MS;
 
     if (!strcmp(a, "type")) {
         const cJSON *text = cJSON_GetObjectItem(args, "text");
@@ -277,11 +293,15 @@ static esp_err_t act_run(const cJSON *args, cJSON *detail)
             return ESP_ERR_INVALID_ARG;
         }
         uint8_t mod = 0, keycode = 0;
-        if (!io_hid_key_for_char(key->valuestring[0], &mod, &keycode)) {
+        if (!resolve_key(key->valuestring, &mod, &keycode)) {
             return ESP_ERR_INVALID_ARG;
         }
         mod |= parse_modifiers(args);
         cJSON_AddStringToObject(detail, "key", key->valuestring);
+        /* 单键默认按 60 ms(IME 处理得过来);有 modifier 时按组合键时长 */
+        const uint16_t hold_ms = cJSON_IsNumber(hold)
+                                   ? (uint16_t)hold->valuedouble
+                                   : (mod ? IO_HID_CHORD_HOLD_MS : IO_HID_KEY_HOLD_MS);
         /* 有 modifier 时走 hotkey(它会清基线),没有就用 tap */
         return mod ? io_hid_hotkey(mod, keycode, hold_ms)
                    : io_hid_keyboard_tap(keycode, hold_ms);
@@ -292,7 +312,7 @@ static esp_err_t act_run(const cJSON *args, cJSON *detail)
             return ESP_ERR_INVALID_ARG;
         }
         uint8_t mod = 0, keycode = 0;
-        if (!io_hid_key_for_char(key->valuestring[0], &mod, &keycode)) {
+        if (!resolve_key(key->valuestring, &mod, &keycode)) {
             return ESP_ERR_INVALID_ARG;
         }
         mod |= parse_modifiers(args);
@@ -300,6 +320,10 @@ static esp_err_t act_run(const cJSON *args, cJSON *detail)
             return ESP_ERR_INVALID_ARG;   /* hotkey 必须有 modifier */
         }
         cJSON_AddStringToObject(detail, "key", key->valuestring);
+        /* 组合键默认按 600 ms:实测 30 ms 的组合键会被 Windows 整段丢弃 */
+        const uint16_t hold_ms = cJSON_IsNumber(hold)
+                                   ? (uint16_t)hold->valuedouble
+                                   : IO_HID_CHORD_HOLD_MS;
         return io_hid_hotkey(mod, keycode, hold_ms);
     }
     if (!strcmp(a, "move")) {
@@ -322,7 +346,10 @@ static esp_err_t act_run(const cJSON *args, cJSON *detail)
         else { return ESP_ERR_INVALID_ARG; }
         cJSON_AddStringToObject(detail, "button", b);
         ESP_RETURN_ON_ERROR(io_hid_mouse_buttons(mask), TAG, "按下失败");
-        vTaskDelay(pdMS_TO_TICKS(hold_ms));
+        const uint16_t click_hold = cJSON_IsNumber(hold)
+                                       ? (uint16_t)hold->valuedouble
+                                       : 30;
+        vTaskDelay(pdMS_TO_TICKS(click_hold));
         return io_hid_mouse_buttons(0);
     }
     if (!strcmp(a, "scroll")) {
@@ -342,11 +369,17 @@ static esp_err_t act_run(const cJSON *args, cJSON *detail)
         if (!strcmp(m->valuestring, "focus_reset")) {
             return io_launcher_focus_reset();
         }
+        if (!strcmp(m->valuestring, "selftest")) {
+            /* 自检:INJ.TXT 出现才算注入链路真的到达了目标机 */
+            const esp_err_t rc = io_launcher_run_selftest();
+            cJSON_AddBoolToObject(detail, "marker_seen", rc == ESP_OK);
+            return rc;
+        }
         if (!strcmp(m->valuestring, "launch_watcher")) {
-            ESP_RETURN_ON_ERROR(io_launcher_focus_reset(), TAG, "focus_reset 失败");
-            ESP_RETURN_ON_ERROR(io_launcher_inject_watch(), TAG, "注入启动命令失败");
-            vTaskDelay(pdMS_TO_TICKS(400));
-            return io_hid_keyboard_tap(IO_HID_KEY_ENTER, 30);
+            /* 拉起:CAP.TXT 出现才算 watcher 真的起来了 */
+            const esp_err_t rc = io_launcher_run_launch();
+            cJSON_AddBoolToObject(detail, "marker_seen", rc == ESP_OK);
+            return rc;
         }
         return ESP_ERR_INVALID_ARG;
     }
