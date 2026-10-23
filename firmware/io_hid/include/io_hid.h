@@ -106,6 +106,20 @@ esp_err_t io_hid_keyboard_tap(uint8_t keycode, uint16_t hold_ms);
 esp_err_t io_hid_hotkey(uint8_t modifier, uint8_t keycode, uint16_t hold_ms);
 
 /**
+ * 组合键,但**修饰键先单独按一次**,再按带修饰键的键(像真键盘那样)。
+ *
+ * 为什么需要:IME 的热键(Ctrl+Space 等)要求修饰键**先于**按键按下。
+ * io_hid_hotkey() 把它俩放在同一个 HID 报告里(修饰键位 + 键码),
+ * IME 的热键识别不会触发 —— 实测"Ctrl+Space 关输入法"完全没生效,
+ * 于是后面的 Shift 单独切换,结果全看注入前的初始态(时灵时不灵)。
+ * 宿主侧用 keybd_event 测就正常,正是因为它是分开发送的。
+ *
+ * @param gap_ms 修饰键按下到按键按下之间的间隔(给 IME 识别热键的时间)
+ */
+esp_err_t io_hid_hotkey_split(uint8_t modifier, uint8_t keycode, uint16_t hold_ms,
+                              uint16_t gap_ms);
+
+/**
  * 查一个字母的 HID keycode(忽略大小写,**不带** shift 修饰)。
  *
  * 组合键要的是"这个键",不是"这个字符":用 'R' 查出来的是 0x15,

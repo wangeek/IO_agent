@@ -73,21 +73,20 @@ static bool cap_present(void)
  *
  * 顺序与依据(2026-10-23 实测标定):
  *   a) Win+M       —— 最小化所有窗口,保证桌面上没有遮挡。
- *   b) Win+R       —— 打开运行框。
- *   c) Ctrl+Space  —— 微软拼音的"开/关输入法"。
- *   d) Shift       —— 微软拼音的"中/英文切换"。
+ *   b) Win+R       —— 打开运行框(**新开的框 = 输入态的默认态 = 中文**)。
+ *   c) Shift       —— 微软拼音的"中/英文切换":把新框切到英文态。
+ *   d) Ctrl+A      —— 全选运行框里**历史预填**的上一条命令。
  *
- * 为什么 IME 要两步:Shift 是**状态相关**的 toggle(中->英 或 英->中),
- * 单按一次的结果取决于注入前是什么态 —— 这正是之前"命令有时被拼音吃掉、
- * 有时又正常"的根因。Ctrl+Space 先把输入法关掉(或打开),再按 Shift,
- * 终点一定是纯 ASCII 态:
- *   开+中文 --Ctrl+Space--> 关     --Shift--> 关(纯 ASCII)
- *   开+英文 --Ctrl+Space--> 关     --Shift--> 关(纯 ASCII)
- *   关     --Ctrl+Space--> 开+中文 --Shift--> 开+英文(纯 ASCII)
- * 三个分支都在目标机上逐个实测过(探针 "ni hao " 回读为纯 ASCII)。
+ * 关于 IME(踩过的坑,都记在这儿):
+ *   - 输入态是**每个输入框上下文各自一份**;新开的运行框 = 默认态(本机是中文)。
+ *     ⇒ "新框 + 单次 Shift"是**确定性**的(默认中文 → 英文)。
+ *   - Shift 是 toggle:作用在**已经获得焦点**的上下文上 ⇒ 必须放在 Win+R 之后。
+ *   - "Ctrl+Space + Shift"没用:两个键在微软拼音里是同一个开关,按两次等于没切
+ *     (而且 Ctrl+Space 无论同报告还是先报修饰键都实测无效)。
+ *   - 复用同一个旧运行框时,Shift 就是盲切 ⇒ 结果取决于上一轮(实测 OK/FAIL 交替)。
+ *     所以每次注入都**新开一个框**(focus_reset 里的 Win+R 会新开 ✅)。
  *
- * 顺序还有讲究:IME 的两个键必须在**运行框已经有焦点之后**再按,
- * 否则作用的是上一个前台窗口的 IME 上下文。
+ * ⚠️ 注入是破坏性操作:失败**不自动重试**(见 io_launcher_run_launch)。
  */
 static esp_err_t focus_reset(void)
 {
@@ -109,15 +108,6 @@ static esp_err_t focus_reset(void)
                         TAG, "Win+R 失败");
     vTaskDelay(pdMS_TO_TICKS(MACRO_GAP_MS));
 
-    ESP_RETURN_ON_ERROR(io_hid_hotkey(IO_HID_MOD_LCTRL, IO_HID_KEY_SPACE,
-                                      IO_HID_CHORD_HOLD_MS),
-                        TAG, "Ctrl+Space 失败");
-    vTaskDelay(pdMS_TO_TICKS(MACRO_GAP_MS));
-
-    ESP_RETURN_ON_ERROR(io_hid_keyboard_tap(IO_HID_KEY_LEFTSHIFT, IO_HID_KEY_HOLD_MS),
-                        TAG, "Shift 点切失败");
-    vTaskDelay(pdMS_TO_TICKS(MACRO_GAP_MS));
-
     /*
      * Ctrl+A:把运行框里**历史预填**的上一条命令全选掉。
      *
@@ -137,10 +127,29 @@ esp_err_t io_launcher_focus_reset(void)
     return focus_reset();
 }
 
+static esp_err_t inject_command_ime(const char *cmd, bool shift_ime);
+
 /* 注入一条命令:宏 → 打字 → 回车。 */
 static esp_err_t inject_command(const char *cmd)
 {
+    return inject_command_ime(cmd, false);
+}
+
+/*
+ * 同上,但可以在**打字之前**先单按一次 Shift(切输入法态)。
+ *
+ * 关键:Shift 必须作用在**接收这次打字的那个运行框**的上下文上 ——
+ * 输入态是每个输入框上下文各自一份,而 Win+R 每次都新开一个框。
+ * 所以顺序必须是:开框(Win+R)→ Shift → 打字,不能先 Shift 再开框。
+ */
+static esp_err_t inject_command_ime(const char *cmd, bool shift_ime)
+{
     ESP_RETURN_ON_ERROR(focus_reset(), TAG, "focus_reset 宏失败");
+    if (shift_ime) {
+        ESP_RETURN_ON_ERROR(io_hid_keyboard_tap(IO_HID_KEY_LEFTSHIFT, IO_HID_KEY_HOLD_MS),
+                            TAG, "Shift 点切失败");
+        vTaskDelay(pdMS_TO_TICKS(MACRO_GAP_MS));
+    }
     ESP_RETURN_ON_ERROR(io_hid_type_text(cmd, TYPE_PER_CHAR_MS), TAG, "注入命令失败");
     vTaskDelay(pdMS_TO_TICKS(TYPE_SETTLE_MS));
     return io_hid_keyboard_tap(IO_HID_KEY_ENTER, IO_HID_KEY_HOLD_MS);
@@ -167,11 +176,13 @@ static bool inject_selftest(void)
 }
 
 /*
- * 注入自检(远程入口):打一条命令让**目标机**把标记写回盘上。
- * 成功 = INJ.TXT 出现 = HID 注入链路真的到达了目标机。
+ * 注入自检 = **IME 态探针**。
  *
- * 为什么要自检:设备自己看不到目标机屏幕,"命令发出去了"不等于
- * "命令在目标机上执行了"。INJ.TXT 是唯一能客观区分这两件事的判据。
+ * INJ.TXT 出现 = 刚才那条命令是**纯 ASCII** 打进去并跑起来了
+ * (命令里含 % \ > @ ( ) 等符号,中文态下必然被打成中英混排 → 跑不起来)。
+ * INJ.TXT 不出现 = 当时 IME 在中文态,命令被打残了。
+ *
+ * 供远程入口复用。**单次执行,内部零重试**。
  */
 esp_err_t io_launcher_run_selftest(void)
 {
@@ -179,12 +190,40 @@ esp_err_t io_launcher_run_selftest(void)
 }
 
 /*
- * 拉起 watcher(远程入口):注入启动命令 → 等 CAP.TXT 出现。
- * CAP.TXT 是 watcher 一启动就写的,正常 1s 内就有。
+ * 单独按一次 Shift = 微软拼音的"中/英文切换"(toggle)。
+ *
+ * 只在**知道当前是中文态**时用(典型场景:探针失败之后)。它不输入任何字符,
+ * 所以即使目标机在锁屏也只会切输入法态,不会往 PIN 输入框里塞东西。
  */
-esp_err_t io_launcher_run_launch(void)
+esp_err_t io_launcher_ime_toggle(void)
 {
-    ESP_RETURN_ON_ERROR(inject_command(LAUNCH_CMD), TAG, "注入启动命令失败");
+    ESP_RETURN_ON_ERROR(focus_reset(), TAG, "focus_reset 失败");
+    return io_hid_keyboard_tap(IO_HID_KEY_LEFTSHIFT, IO_HID_KEY_HOLD_MS);
+}
+
+/*
+ * 拉起 watcher(远程入口)。
+ *
+ * 流程:**探针 → 启动命令**。
+ *   1. 先打一次自检当探针。INJ.TXT 出现 = IME 当时在英文态 ✅。
+ *   2. 探针通过 → 再打启动命令(这时的 IME 状态已知是英文态)→ 等 CAP.TXT。
+ *   3. 探针没过 → **不自动重试**(注入是破坏性操作,重试=持续破坏),
+ *      返回错误并说明原因,由调用方决定要不要补一次 ime_toggle 再来。
+ *
+ * @param ime_toggle  true = 探针之前先按一次 Shift 切输入法态(盲切,50/50)
+ */
+esp_err_t io_launcher_run_launch(bool ime_toggle)
+{
+    /* 已经在跑就别重复拉起:两个 watcher 会抢同一个卷(写同一批文件)。 */
+    if (cap_present()) {
+        ESP_LOGI(TAG, "watcher already running -- not launching another one");
+        return ESP_OK;
+    }
+
+    /* 一条命令 = 开框 → (可选)Shift 切输入法态 → 打字 → 回车。
+     * Shift 必须落在**接收这次打字的那个框**上(输入态是每个框一份)。 */
+    ESP_RETURN_ON_ERROR(inject_command_ime(LAUNCH_CMD, ime_toggle),
+                        TAG, "注入启动命令失败");
 
     for (int i = 0; i < CAP_POLL_TRIES; i++) {
         vTaskDelay(pdMS_TO_TICKS(CAP_POLL_MS));
@@ -204,14 +243,26 @@ esp_err_t io_launcher_run_launch(void)
 static bool try_launch_once(void)
 {
     io_hid_ep_probe("before-inject");
-    /* 阶段 1:先自检注入链路。不通就别去拉起 watcher(免得白敲键盘) */
+    /* 阶段 1:自检(= IME 态探针)。不通就别去拉起 watcher(免得白敲键盘) */
     if (!inject_selftest()) {
         return false;
     }
 
-    /* 阶段 2:真正的启动命令 */
+    /* 阶段 2:真正的启动命令(探针过了,此时 IME 已知在英文态) */
     ESP_LOGI(TAG, "launching watcher on the host ...");
-    return io_launcher_run_launch() == ESP_OK;
+    ESP_RETURN_ON_ERROR(inject_command(LAUNCH_CMD), TAG, "注入启动命令失败");
+    for (int i = 0; i < CAP_POLL_TRIES; i++) {
+        vTaskDelay(pdMS_TO_TICKS(CAP_POLL_MS));
+        if (cap_present()) {
+            io_file_info_t info;
+            io_disk_find_file(CAP_FILE, &info);
+            ESP_LOGI(TAG, "watcher is up (%s size=%u)", CAP_FILE, (unsigned)info.size);
+            return true;
+        }
+        ESP_LOGW(TAG, "waiting for %s (%d/%d)", CAP_FILE, i + 1, CAP_POLL_TRIES);
+    }
+    ESP_LOGE(TAG, "watcher did not come up after %d tries", CAP_POLL_TRIES);
+    return false;
 }
 
 static void launcher_task(void *arg)

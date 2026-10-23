@@ -18,6 +18,8 @@
  */
 #pragma once
 
+#include <stdbool.h>
+
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -55,16 +57,30 @@ esp_err_t io_launcher_focus_reset(void);
  *
  * INJ.TXT 出现 = HID 注入真的到达了目标机(而不是"命令发出去了")。
  * 成功返回 ESP_OK,超时返回 ESP_ERR_TIMEOUT。
+ *
+ * 它同时是 **IME 态探针**:命令里含 % \ > @ ( ) 等符号,中文态下必然被打成
+ * 中英混排 → 跑不起来 → INJ.TXT 不出现。**不出现 = 当时 IME 在中文态**。
  */
 esp_err_t io_launcher_run_selftest(void);
 
 /**
- * 注入 watcher 启动命令并等 CAP.TXT 出现。
+ * 单独按一次 Shift(微软拼音的"中/英文切换",toggle)。
  *
- * CAP.TXT 是 watcher 一启动就写的自陈文件,出现 = watcher 真的起来了。
- * 成功返回 ESP_OK,超时返回 ESP_ERR_TIMEOUT。
+ * 只在**知道当前是中文态**时用(探针失败之后)。它不输入任何字符,即使目标机
+ * 在锁屏也只会切输入法态,不会往 PIN 输入框里塞东西。
  */
-esp_err_t io_launcher_run_launch(void);
+esp_err_t io_launcher_ime_toggle(void);
+
+/**
+ * 拉起 watcher(远程入口):**探针 → 启动命令**。
+ *
+ * 探针(INJ.TXT)先确认 IME 当时在英文态,再打启动命令;探针不过就**不自动
+ * 重试**,返回 ESP_ERR_INVALID_STATE(注入是破坏性操作,重试=持续破坏),
+ * 由调用方决定要不要先来一次 io_launcher_ime_toggle()。
+ *
+ * @param ime_toggle true = 探针之前先盲按一次 Shift 切输入法态(50/50)
+ */
+esp_err_t io_launcher_run_launch(bool ime_toggle);
 
 #ifdef __cplusplus
 }

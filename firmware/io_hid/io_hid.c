@@ -410,6 +410,38 @@ esp_err_t io_hid_hotkey(uint8_t modifier, uint8_t keycode, uint16_t hold_ms)
     return io_hid_tap_mod(modifier, keycode, hold_ms);
 }
 
+esp_err_t io_hid_hotkey_split(uint8_t modifier, uint8_t keycode, uint16_t hold_ms,
+                              uint16_t gap_ms)
+{
+    /*
+     * 分三步:① 只报修饰键 ② 报"修饰键 + 键" ③ 抬起。
+     * ① 与 ② 必须是**两个独立的 HID 报告** —— 同一个报告里同时给出
+     * 修饰键位和键码时,IME 的热键识别不触发(实测 Ctrl+Space 失效)。
+     */
+    memset(s_keys, 0, sizeof(s_keys));
+    s_key_count = 0;
+    ESP_RETURN_ON_ERROR(io_hid_send_keyboard_mod(modifier), TAG, "修饰键按下失败");
+    if (gap_ms > 0) {
+        vTaskDelay(pdMS_TO_TICKS(gap_ms));
+    }
+
+    if (keycode) {
+        s_keys[s_key_count++] = keycode;
+    }
+    ESP_RETURN_ON_ERROR(io_hid_send_keyboard_mod(modifier), TAG, "按键按下失败");
+    if (hold_ms > 0) {
+        vTaskDelay(pdMS_TO_TICKS(hold_ms));
+    }
+
+    memset(s_keys, 0, sizeof(s_keys));
+    s_key_count = 0;
+    ESP_RETURN_ON_ERROR(io_hid_send_keyboard_mod(modifier), TAG, "按键抬起失败");
+    if (gap_ms > 0) {
+        vTaskDelay(pdMS_TO_TICKS(gap_ms));
+    }
+    return io_hid_send_keyboard_mod(0);
+}
+
 esp_err_t io_hid_type_text(const char *text, uint16_t per_char_ms)
 {
     if (!text) {

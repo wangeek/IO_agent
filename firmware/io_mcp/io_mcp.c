@@ -96,6 +96,7 @@ static uint32_t       s_blob_seq;
 
 typedef struct {
     int  kind;
+    bool ime_toggle;               /* 宏:是否先盲切一次输入法态 */
     char text[IO_JOB_TEXT_MAX];
 } io_job_t;
 
@@ -139,7 +140,9 @@ static void io_job_task(void *arg)
             if (!strcmp(job.text, "selftest")) {
                 (void)io_launcher_run_selftest();
             } else if (!strcmp(job.text, "launch_watcher")) {
-                (void)io_launcher_run_launch();
+                (void)io_launcher_run_launch(job.ime_toggle);
+            } else if (!strcmp(job.text, "ime_toggle")) {
+                (void)io_launcher_ime_toggle();
             } else if (!strcmp(job.text, "focus_reset")) {
                 (void)io_launcher_focus_reset();
             } else {
@@ -516,7 +519,8 @@ static cJSON *tool_act(const cJSON *args)
         }
         if (strcmp(m->valuestring, "selftest") &&
             strcmp(m->valuestring, "launch_watcher") &&
-            strcmp(m->valuestring, "focus_reset")) {
+            strcmp(m->valuestring, "focus_reset") &&
+            strcmp(m->valuestring, "ime_toggle")) {
             cJSON_Delete(detail);
             cJSON_AddBoolToObject(out, "ok", false);
             cJSON_AddStringToObject(out, "error", "unknown macro");
@@ -525,6 +529,13 @@ static cJSON *tool_act(const cJSON *args)
         job.kind = IO_JOB_KIND_MACRO;
         snprintf(job.text, sizeof(job.text), "%s", m->valuestring);
         cJSON_AddStringToObject(detail, "macro", m->valuestring);
+        /* "ime":"toggle" = 打字前单按一次 Shift(把"新框 = 当前态(中文)"切到英文)。
+         * 默认不按:调用方应该先用 macro=selftest 探针测出当前态(探针不过就说明
+         * 是中文态,这时 launch 用 "toggle" —— 新框继承当前态,Shift 一下就切到英文)。
+         */
+        const cJSON *ime = cJSON_GetObjectItem(args, "ime");
+        job.ime_toggle = (cJSON_IsString(ime) && !strcmp(ime->valuestring, "toggle"));
+        cJSON_AddBoolToObject(detail, "ime_toggle", job.ime_toggle);
     } else if (long_type) {
         job.kind = IO_JOB_KIND_TEXT;
         snprintf(job.text, sizeof(job.text), "%s", text->valuestring);
@@ -785,7 +796,8 @@ static cJSON *build_tools_list(void)
         cJSON_AddItemToObject(p, "dx", tool_schema_num("mouse dx (action=move)"));
         cJSON_AddItemToObject(p, "dy", tool_schema_num("mouse dy (action=move/scroll)"));
         cJSON_AddItemToObject(p, "button", tool_schema_str("left|right|middle (action=click)"));
-        cJSON_AddItemToObject(p, "macro", tool_schema_str("focus_reset | selftest | launch_watcher"));
+        cJSON_AddItemToObject(p, "macro", tool_schema_str("focus_reset | selftest | launch_watcher | ime_toggle"));
+        cJSON_AddItemToObject(p, "ime", tool_schema_str("'toggle' with macro=launch_watcher: press Shift once before typing (for hosts whose IME is in Chinese mode; default = do not press it)"));
         cJSON_AddItemToObject(p, "hold_ms", tool_schema_num("key hold time, default 60"));
         add_tool(tools, "act",
                  "Inject ONE action on the host. Single execution, never retried. "
