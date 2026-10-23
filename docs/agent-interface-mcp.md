@@ -174,6 +174,15 @@ Windows 账户防暴力锁定(实测事故:设备每 3 秒重试一轮,目标机
 凭据**不进仓库、不进固件二进制**。**mDNS 发现与 TLS-PSK 双向鉴权待做**
 (候选见 `implementation-plan.md` 决策 13)。
 
+**并发模型(2026-10-23 定调)**:MCP over HTTP+JSON 是**被 agent 生态逼出来的兼容层**,
+不是产品目标 —— 设备端**单例模式**:一次只执行一个请求/操作;
+**有请求在执行时,新请求直接返回 `busy`**(不排队执行),`BUSY` 沿用既有命令状态词表。
+
+实现约束(查证 esp_http_server 源码):它是**单 task**,长操作在 handler 里跑时,
+第二个请求**连 handler 都进不去** → 物理上拿不到 `busy`。
+"物理上立刻"需要:长操作移出 httpd task(worker task)+ 发起方不等结果
+(结果由盘上标记 `INJ.TXT`/`CAP.TXT` 回读),**不引入 job 状态机/轮询端点**。
+
 验收方式用**裸 HTTP 构造**(不依赖 MCP 客户端):`tools/mcp_probe.py`。
 注意 **PowerShell 把 JSON 传给 `curl.exe` 会吃掉双引号**(报 `invalid JSON`),
 所以用 Python 发或 `--data-binary @file`。

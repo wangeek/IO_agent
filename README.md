@@ -54,12 +54,13 @@
 | watcher 启动 | **按卷标解析,不写死盘符(2026-10-22)**:dongle 拔线即断电,重入后盘符可能变。设备注入 `cmd /c for %d in (I O A G E N T) do @if exist %d:\WATCH.PS1 start "" powershell -ExecutionPolicy Bypass -WindowStyle Hidden %d:\WATCH.PS1`,注入后轮询 RAM disk 里的 `CAP.TXT` 判定拉起成功,未出现则 2s 间隔重试(最多 5 次)。**注入前必做 `focus_reset`(见下行「注入序列」)** |
 | 注入序列(2026-10-23 实测定案) | `Win+M` → `Win+R` → `Ctrl+Space` → `Shift` → `Ctrl+A` → 打字 → `Enter`,每步之间 500ms。四个关键点:**① keycode 是 HID 用法 ID 不是 ASCII** —— 传 `'R'`(0x52)会按成小键盘的键,`Win+R` 根本不触发(这个 bug 让组合键从来没生效过);字母要用 `io_hid_keycode_for_letter()`。**② 组合键必须按住 ≥600ms** —— 30ms 会被 Windows 整段丢弃。**③ 单键必须按住 ≥60ms** —— 8ms 时微软拼音把输入打成乱码(`ni hao ` 变成 49 个"啊")。**④ IME 必须强制**:Shift 是**状态相关**的 toggle(中→英 或 英→中),单按一次结果取决于注入前是什么态;`Ctrl+Space`(开/关输入法)+ `Shift`(中/英切换)两步走,终点一定是纯 ASCII 态(三种初始态都实测过)。**⑤ 运行框会预填历史命令**(且不是选中态) → 必须先 `Ctrl+A` 全选,否则我们的命令被追加在它后面变成废命令 |
 | 注入触发方式 | **默认关,只走远程显式触发(2026-10-22 事故后定案)**。往用户机器注入按键是**破坏性操作**:目标机若在锁屏,按键会被当成 PIN 输入 → 持续失败 → 触发账户防暴力锁定(实测事故)。因此 `IO_LAUNCHER_AUTOSTART` 默认 **0**(开机不自动拉起),注入只能由远程 `act` **单次触发、零重试**(失败不自动重发 —— 对"打系统快捷键"这类动作,重试=持续破坏)。`act` 默认回传注入**前后两张截图 URL**,由 agent 自己判定生效。验收放虚拟机/靶机;主力机上只能"人在场 + 知情 + 手动单次触发"。**远程另给 `macro=selftest`**:注入一条把标记写回盘的命令,设备以盘上是否出现 `INJ.TXT` 判定"HID 真的到达了目标机"(`marker_seen`)——设备自己看不到屏幕,这是唯一客观判据 |
+| 设备端 HTTP 的定位(2026-10-23 定调) | **MCP over HTTP+JSON 是被 agent 生态逼出来的兼容层,不是产品目标** —— agent 只支持 MCP,快速实现比"做一个完整 HTTP 服务器"重要。所以设备端**刻意保持最小**:不追求完整 HTTP 服务器实现,**不追求并发**。**单例模式**:设备端**一次只执行一个请求/操作**;**有请求在执行时,新请求直接返回 `busy`**(不排队执行、不排队等结果)。`BUSY` 沿用既有命令状态词表(`OK \| PARSE_ERR \| BAD_OP \| TIMEOUT \| BUSY \| EXEC_ERR \| HW_ERR`)。**实现约束(2026-10-23 查证)**:esp_http_server 是**单 task**(一个 server task 串行处理所有会话)→ 若长操作(如 `act` 注入 ~10s)在 handler 里跑,第二个请求**连 handler 都进不去**,物理上拿不到 `busy`;要"物理上立刻"必须 ① 把长操作移出 httpd task(worker task)② 发起方不等结果(结果由盘上标记文件 `INJ.TXT`/`CAP.TXT` 回读)。**待实现** |
 
 ## 后期实现项(2026-10-23 记下,以后实现)
 
 | # | 项目 | 现状 / 要点 |
 |---|---|---|
-| P1 | `act` 改**受理 + 轮询**,不再阻塞 httpd 单 task | 现在一次注入(Win+M/Win+R/IME/打字 ~110 字 @60ms/回车)约 **10s**,期间 httpd 只有一个 task → **所有 HTTP 连接全卡住**。改成"立刻受理 → 返回 job id → 另开 `act/status` 轮询" |
+| P1 | **单例 + `busy` 语义落地**(替代原"act 改受理+轮询") | 定调:**有请求在执行时,新请求直接返回 `busy`**,不排队执行。要"物理上立刻"必须把长操作移出 httpd task:① 长操作(`act` 注入 / `deploy_payload` 写 flash)放 **worker task** ② httpd handler 抢**单例槽**:抢不到 → 立刻回 `busy`;抢到 → 触发后**不等结果**,由 agent 轮询盘上标记(`INJ.TXT`/`CAP.TXT`)判定 ③ 注入期间 `observe`/`watcher/status` 仍可服务(长操作不再占住 httpd task)④ **不需要 job 状态机/轮询端点** —— 标记文件本来就是状态。**不做的**:通用异步受理层(与"兼容层保持最小"相悖) |
 | P2 | 请求路径硬化 | ① body 大小上限(现在没限)② `Content-Type` 不对要回 **415** ③ `Origin` + `Host` 必须绑定设备 IP / mDNS 名(**DNS rebinding** 防护) |
 | P3 | 设备侧鉴权 | 明文 HTTP 下**局域网任意主机当前都能调 `act`**(注入是破坏性操作)。用 PSK token 头;与 TLS-PSK 双向鉴权一起做 |
 | P4 | 协议细节 | ① 协议版本**协商**(现在固定 `2025-06-18`)② **别发假的 session id**(现在硬编码 `Mcp-Session-Id: ioagent-1`)→ 改无状态 |
