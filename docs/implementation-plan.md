@@ -170,7 +170,8 @@ IO_agent/
 限额为 IN ≤ 4 / 总占用 ≤ 6 → **富余 IN 端点 2 个、OUT 端点 3 个**,与"富余端点留 vendor bulk(M2/M3)"的方案一致。
 
 ### M2 注入链路
-- HID 键盘/鼠标注入;**动作序列本地定时执行**(<10ms/步,禁止逐条 WiFi 往返)。
+- HID 键盘/鼠标注入;**动作序列本地定时执行**(整条序列在**一次** HTTP 请求内跑完,
+  禁止逐条 WiFi 往返;实测标定的单步时长:组合键 600ms、单键/逐字符 60ms)。
 - `focus_reset` 宏(2026-10-23 实测重定案):**`Win+M` → `Win+R` → `Ctrl+Space` → `Shift` → `Ctrl+A`**,每步之间 500ms。
   - **keycode 是 HID 用法 ID,不是 ASCII**:传 `'R'`(0x52)会按成小键盘的键 —— 组合键从来没生效过
     (`io_hid_keycode_for_letter()` 负责字母 → keycode)。
@@ -184,7 +185,10 @@ IO_agent/
   Windows 可能分配到别的盘符 → 写死 `X:\` 的命令在重入后必然失效。
   命令形态:`cmd /c for %d in (I O A G E N T) do @if exist %d:\WATCH.PS1 start "" powershell -ExecutionPolicy Bypass -WindowStyle Hidden %d:\WATCH.PS1`
   → 纯 cmd 内建语法,无 `Get-Volume` 之类的可选模块依赖。
-- 验收:自动化脚本注入含 Shift/特殊字符的文本,主机侧逐字节一致;时序抖动 <10ms/步。
+- 验收(2026-10-23 已过):① 注入含 Shift/特殊字符(`% \ > @ ( ) _ .`)的整条命令,
+  在目标机**执行成功**(设备在盘上看到 `INJ.TXT` = `INJECT_OK`)② 探针文本在运行框里
+  **逐字节回读一致**(纯 ASCII)③ 单步时长按实测标定(组合键 600ms / 逐字符 60ms),
+  **不是 <10ms**——30ms 的组合键会被 Windows 整段丢弃,8ms 的逐字符会被 IME 打成乱码。
 - **远程自检宏 `macro=selftest`(2026-10-23 新增)**:注入一条把标记写回盘的命令,
   设备以盘上是否出现 `INJ.TXT` 判定"HID 真的到达了目标机"(`marker_seen`)。
   设备自己看不到目标机屏幕,这是唯一能区分"命令发出去了"和"命令执行了"的客观判据。
