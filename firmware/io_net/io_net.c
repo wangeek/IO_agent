@@ -10,6 +10,11 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include "lwip/netif.h"
+#include "lwip/err.h"
+#include "lwip/tcpip.h"
+#include "lwip/apps/mdns.h"
+
 #include "io_cfg.h"
 
 static const char *TAG = "io_net";
@@ -20,9 +25,90 @@ static const char *TAG = "io_net";
 static bool     s_connected;
 static bool     s_connecting;
 static bool     s_has_creds;     /* 有没有凭据:没有就别重试,重试也没意义 */
+static bool     s_connect_started; /* 已经发起过连接(LED 用:区分"启动中"和"没连上") */
 static char     s_ip[16] = "0.0.0.0";
 static uint32_t s_retry_ms = WIFI_RETRY_MIN_MS;
 static esp_netif_t *s_sta_netif;
+static bool     s_mdns_started;   /* mDNS responder 只装配一次 */
+
+/*
+ * mDNS 装配要在 TCP/IP 线程里做(原因见 io_net_start_mdns 的注释),
+ * 所以上下文要跨线程传,用这个结构体。
+ */
+#define IO_MDNS_NAME_MAX 32
+
+typedef struct {
+    char           name[IO_MDNS_NAME_MAX];
+    uint16_t       port;
+    int            rc;            /* 0 = ok,负数 = 失败原因 */
+    volatile bool  done;
+} io_mdns_ctx_t;
+
+/* 拿到 STA 对应的 lwIP netif。挑"已 up 且拿到 IPv4"的那个,别去猜 netif_list 的顺序。 */
+static struct netif *io_net_sta_lwip_netif(void)
+{
+    struct netif *fallback = NULL;
+    for (struct netif *nif = netif_list; nif != NULL; nif = nif->next) {
+        if (!fallback) {
+            fallback = nif;
+        }
+        if (netif_is_up(nif) && !ip4_addr_isany_val(*netif_ip4_addr(nif))) {
+            return nif;
+        }
+    }
+    return fallback;
+}
+
+/* 在 TCP/IP 线程里执行:真正的 mDNS 装配。 */
+static void io_net_mdns_setup_cb(void *arg)
+{
+    io_mdns_ctx_t *c = (io_mdns_ctx_t *)arg;
+
+    struct netif *sta = io_net_sta_lwip_netif();
+    if (!sta) {
+        ESP_LOGE(TAG, "mDNS: no lwIP netif");
+        c->rc = -1;
+        c->done = true;
+        return;
+    }
+
+    mdns_resp_init();
+    if (mdns_resp_add_netif(sta, c->name) != ERR_OK) {
+        ESP_LOGE(TAG, "mDNS: add_netif failed");
+        c->rc = -2;
+        c->done = true;
+        return;
+    }
+    if (mdns_resp_add_service(sta, c->name, "_ioagent", DNSSD_PROTO_TCP, c->port,
+                              NULL, NULL) != ERR_OK) {
+        ESP_LOGE(TAG, "mDNS: add_service failed");
+        c->rc = -3;
+        c->done = true;
+        return;
+    }
+    mdns_resp_announce(sta);
+
+    c->rc = 0;
+    c->done = true;
+}
+
+/*
+ * 重新广播:DHCP 换了 IP 之后,旧的 A 记录就是过期地址了。
+ * 同样要在 TCP/IP 线程里做。
+ */
+static void io_net_mdns_announce_cb(void *arg)
+{
+    (void)arg;
+    struct netif *sta = io_net_sta_lwip_netif();
+    if (sta) {
+        mdns_resp_netif_settings_changed(sta);
+    }
+}
+
+bool io_net_connect_started(void)
+{
+    return s_connect_started;
+}
 
 static void retry_task(void *arg)
 {
@@ -63,6 +149,10 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id,
         s_connecting = false;
         s_retry_ms = WIFI_RETRY_MIN_MS;
         ESP_LOGI(TAG, "got IP: %s", s_ip);
+        /* IP 变了 -> 重新广播 mDNS(否则 A 记录指向旧地址) */
+        if (s_mdns_started) {
+            tcpip_callback(io_net_mdns_announce_cb, NULL);
+        }
     }
 }
 
@@ -109,6 +199,7 @@ esp_err_t io_net_connect(const char *ssid, const char *pass)
         return ESP_ERR_NOT_FOUND;
     }
     s_has_creds = true;
+    s_connect_started = true;
 
     wifi_config_t wc = { 0 };
     strncpy((char *)wc.sta.ssid, s, sizeof(wc.sta.ssid) - 1);
@@ -176,21 +267,79 @@ const char *io_net_ip(void)
 esp_err_t io_net_start_mdns(uint16_t port)
 {
     /*
-     * mDNS 发现机制 —— **M5 收尾项,当前未实现**。
+     * mDNS 发现(2026-10-23 实现)。
      *
-     * 原因:ESP-IDF 5.5 没有内置 mDNS 组件(esp-mdns 是组件管理器里的第三方库,
-     * 而本项目关闭了组件管理器以保证离线可复现构建);lwIP 自带的 MDNS
-     * responder 也没启用(CONFIG_LWIP_MDNS_RESPONDER 未开)。
+     * 作用:让 agent **不用配 IP 就能找到设备** —— 设备 IP 是 DHCP 分配的,
+     * 重启/换网后会变。设备把 <设备名>.local 与服务类型 _ioagent._tcp.local
+     * 广播出去,agent 解析出 IP:8080 就能连。
      *
-     * 候选实现(择一,届时再定):
-     *   a) 开 CONFIG_LWIP_MDNS_RESPONDER,用 lwIP 原生 mdns API(apps/mdns.h)
-     *   b) vendored esp-mdns 库(和 esp_tinyusb 一样随仓库走)
+     * 为什么用 lwIP 原生 responder:esp-mdns 在组件管理器里(与"关组件管理器 +
+     * 离线可复现"冲突),而 lwIP 自带的 mdns app 支持 DNS-SD 服务记录 + 端口 +
+     * TXT,正好够用 —— 我们把 IDF 树里那三个 .c 直接编进本组件
+     * (见 io_net/CMakeLists.txt),不 vendored 副本,始终跟 IDF 版本一致。
      *
-     * 现阶段 agent 用串口日志里打印的 IP 直连即可(开发测试够用)。
+     * 注意:lwIP 的 mdns app 需要 netif 的 client_data 槽位,所以 sdkconfig 里
+     * 打开了 CONFIG_LWIP_NUM_NETIF_CLIENT_DATA(整个 lwip 统一编译,不会错位)。
      */
-    ESP_LOGI(TAG, "MCP service reachable at http://%s:%u/  (mDNS not enabled yet)",
+#if LWIP_MDNS_RESPONDER
+    if (s_mdns_started) {
+        return ESP_OK;
+    }
+    s_mdns_started = true;
+
+    io_mdns_ctx_t ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.port = port;
+    ctx.rc = -99;
+    /* 名字复制一份:回调在 TCP/IP 线程里跑,不能依赖调用方的缓冲区 */
+    snprintf(ctx.name, sizeof(ctx.name), "%s", io_cfg_device_name());
+
+    /*
+     * ★ 必须在 TCP/IP 线程里装配 ★
+     *
+     * mdns_resp_add_netif() -> mdns_resp_restart() -> mdns_set_timeout() ->
+     * sys_timeout():往 lwIP 的定时器链表里插条目。而 lwIP 核心(含定时器链表)
+     * 跑在 TCP/IP 线程上,本项目的 sdkconfig **没有开** CORE_LOCKING
+     * (CONFIG_LWIP_TCPIP_CORE_LOCKING is not set),所以从别的任务插条目是数据竞争。
+     *
+     * 症状极具迷惑性:所有 mdns API 都返回成功,日志也照打,但:
+     *   - 定时器不触发 -> 状态机永远停在 MDNS_STATE_PROBING
+     *   - 停在 PROBING 就不会发探测包(线上一个包都没有)
+     *   - mdns.c 的 mdns_handle_question() 在 state != COMPLETE 时直接 return
+     *     -> 收到查询也不应答
+     * 表现就是"注册成功但永远不应答"。
+     *
+     * 所以:用 tcpip_callback() 把装配动作投递到 TCP/IP 线程。
+     */
+    const err_t posted = tcpip_callback(io_net_mdns_setup_cb, &ctx);
+    if (posted != ERR_OK) {
+        ESP_LOGE(TAG, "mDNS: tcpip_callback failed (%s)", lwip_strerr(posted));
+        s_mdns_started = false;
+        return ESP_FAIL;
+    }
+    /* tcpip_callback 只负责投递,不等待执行完;这里等它跑完再收结果 */
+    for (int i = 0; i < 300 && !ctx.done; i++) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    if (!ctx.done) {
+        ESP_LOGE(TAG, "mDNS: setup callback timed out");
+        s_mdns_started = false;
+        return ESP_ERR_TIMEOUT;
+    }
+    if (ctx.rc != 0) {
+        ESP_LOGE(TAG, "mDNS: setup failed (rc=%d)", ctx.rc);
+        s_mdns_started = false;
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "mDNS: %s.local  (service _ioagent._tcp.local:%u)",
+             ctx.name, (unsigned)port);
+    return ESP_OK;
+#else
+    ESP_LOGI(TAG, "MCP service reachable at http://%s:%u/  (mDNS responder not compiled in)",
              io_net_ip(), (unsigned)port);
     return ESP_ERR_NOT_SUPPORTED;
+#endif
 }
 
 esp_err_t io_net_disconnect(void)

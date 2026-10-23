@@ -39,6 +39,14 @@ esp_err_t io_net_reconnect(const char *ssid, const char *pass);
 
 bool io_net_is_connected(void);
 
+/**
+ * 有没有发起过连接尝试。
+ *
+ * 用来区分两种"网络没就绪":刚上电、还没开始连(LED:启动中)vs.
+ * 已经在连/连不上(LED:网络未就绪)。设备自己能测出来。
+ */
+bool io_net_connect_started(void);
+
 /** 当前 IP(字符串,没连上返回 "0.0.0.0")。 */
 const char *io_net_ip(void);
 

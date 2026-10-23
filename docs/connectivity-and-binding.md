@@ -117,9 +117,11 @@ agent 拉帧时可能拿到几百毫秒前的旧帧。机制:
 
 - **Stage 0**:设备上电 → 自检(HID 通路 / PSRAM / WiFi)→ 若凭据已预置则连 WiFi →
   起 mDNS 广播 → agent 可发现。**不再需要配网门户作为必经步骤。**
-  *当前实现:*凭据在 NVS,用 **UART0 控制台配网**(`wifi set <ssid> [pass]`);
-  **mDNS 与 TLS-PSK 待做**,现阶段 agent 用串口日志里打印的 IP 直连设备 MCP 端点
-  (`POST /mcp` / `GET /ping`)。
+  *当前实现:*凭据在 NVS,用 **UART0 控制台配网**(`wifi set <ssid> [pass]`)
+  或 **U 盘 `DEV.CFG`**(设备开机取一次 + 每 5 秒轮询,内容变了写 NVS 并重连);
+  **mDNS 已实现(2026-10-23)**:设备广播 `_ioagent._tcp.local`,宿主用
+  `tools/discover.py` 解出端点(自带解析器,Windows 的系统解析器不认 `.local`);
+  **TLS-PSK 待做**,现阶段是明文 HTTP。
 - **Stage 1**:按 §七 策略拉起目标机驻守脚本(HID 敲 `Win+R` → 注入**按卷标解析**的
   启动命令,见 `output-channel-design.md` §四 L1;注入后轮询 RAM disk 里的 `CAP.TXT`
   判定拉起成功,未出现则 2s 间隔重试,最多 5 次)

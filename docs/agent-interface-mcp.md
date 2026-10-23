@@ -188,7 +188,9 @@ Windows 账户防暴力锁定(实测事故:设备每 3 秒重试一轮,目标机
 
 **当前实现状态**:明文 HTTP;凭据在 NVS,**用 UART0 控制台配网**
 (`wifi scan` / `wifi set <ssid> [pass]` / `psk set <psk>` / `name set <n>` / `status`),
-凭据**不进仓库、不进固件二进制**。**mDNS 发现与 TLS-PSK 双向鉴权待做**
+凭据**不进仓库、不进固件二进制**。**mDNS 发现已实现(2026-10-23)**:
+设备广播 `_ioagent._tcp.local`,宿主用 `tools/discover.py`(自带解析器,Windows 系统解析器
+不认 `.local`)解出 `http://<ip>:8080/mcp`。**TLS-PSK 双向鉴权待做**
 (候选见 `implementation-plan.md` 决策 13)。
 
 **并发模型(2026-10-23 定调,已实现)**:MCP over HTTP+JSON 是**被 agent 生态逼出来的兼容层**,

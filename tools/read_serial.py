@@ -27,21 +27,30 @@ seconds = float(sys.argv[2]) if len(sys.argv) > 2 else 15.0
 do_reset = len(sys.argv) > 3 and sys.argv[3] == "--reset"
 
 try:
-    if do_reset:
-        ser = serial.Serial(port, 115200, timeout=0.25)
-    else:
-        ser = serial.Serial()
-        ser.port = port
-        ser.baudrate = 115200
-        ser.timeout = 0.25
-        ser.dtr = False
-        ser.rts = False
-        ser.open()
-        ser.dtr = False
-        ser.rts = False
+    ser = serial.Serial()
+    ser.port = port
+    ser.baudrate = 115200
+    ser.timeout = 0.25
+    ser.dtr = False
+    ser.rts = False
+    ser.open()
+    ser.dtr = False
+    ser.rts = False
 except Exception as exc:  # noqa: BLE001
     print("OPEN_FAILED: {}".format(exc))
     sys.exit(2)
+
+if do_reset:
+    # DevKitC-1 auto-reset: RTS# asserted (low) pulls EN low -> chip reset.
+    # DTR# must stay de-asserted, otherwise IO0 goes low and the chip boots
+    # into the download mode instead of running from flash.
+    # Opening the port with pyserial defaults does NOT reliably reset: the
+    # CH343 keeps whatever line state it had, so we pulse explicitly.
+    ser.rts = True
+    time.sleep(0.2)
+    ser.rts = False
+    time.sleep(0.3)
+    print("RESET pulsed (EN low -> high)")
 
 print("OPENED {} @115200, reading {:.1f}s".format(port, seconds))
 deadline = time.time() + seconds
