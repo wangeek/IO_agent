@@ -24,6 +24,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 
 #include <esp_log.h>
@@ -51,6 +52,34 @@ static const char *TAG = "io_mcp";
 #define IO_MCP_PROTO         "2025-06-18"
 #define IO_MCP_SERVER_NAME   "ioagent"
 #define IO_MCP_SERVER_VER    "1.0.0"
+
+/*
+ * body 大小上限。
+ *
+ * 上限怎么定:最大的合法请求是 `deploy_payload` —— 把内容 base64 装进
+ * AGENT.EXE 槽(64 KB 原字节 → base64 约 87 KB),所以 128 KB 够用还有富余。
+ * 上限的意义不是"防大包"而是**不让 content_len 变成无界的 malloc**:
+ * httpd 只有一个 task,一个超大 body 会把整个服务打死(读 body 的那一步
+ * 是在 httpd task 里同步做的)。
+ */
+#define IO_MCP_MAX_BODY      (128 * 1024)
+
+/*
+ * body 超限时"抽干"的上限:读掉多少才放弃并回 413。
+ * 抽干是为了让客户端能干净地读到 413(直接关连接的话客户端只会看到 RST),
+ * 但不能无限读 —— 所以设个上限。
+ */
+#define IO_MCP_MAX_DRAIN     (256 * 1024)
+
+/*
+ * 支持的 MCP 协议版本(协商用)。客户端 initialize 时报自己要的版本,
+ * 我们支持就原样回,不支持就回最新的那个,由客户端决定要不要继续。
+ */
+static const char *const IO_MCP_PROTO_SUPPORTED[] = {
+    "2024-11-05",
+    "2025-03-26",
+    "2025-06-18",
+};
 
 /* ------------------------------------------------------------------ */
 /* 观察帧 blob 缓存                                                     */
@@ -877,6 +906,244 @@ static cJSON *build_tools_list(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 请求加固 + 协议版本协商                                               */
+/* ------------------------------------------------------------------ */
+
+/* 这个协议版本我们支持吗? */
+static bool proto_supported(const char *v)
+{
+    if (!v || !*v) {
+        return false;
+    }
+    const size_t n = sizeof(IO_MCP_PROTO_SUPPORTED) / sizeof(IO_MCP_PROTO_SUPPORTED[0]);
+    for (size_t i = 0; i < n; i++) {
+        if (!strcmp(v, IO_MCP_PROTO_SUPPORTED[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * 协议版本协商。
+ *
+ * MCP 规范:客户端 initialize 时带 protocolVersion;服务端支持就**原样回**,
+ * 不支持就回自己支持的版本,由客户端决定要不要继续(客户端可以断开重连)。
+ * 之前是固定回一个版本号,客户端要什么版本都假装同意。
+ */
+static const char *proto_negotiate(const char *requested)
+{
+    return proto_supported(requested) ? requested : IO_MCP_PROTO;
+}
+
+/*
+ * Host / Origin 绑定(DNS rebinding 防护)。
+ *
+ * 威胁模型:受害者浏览器打开一个恶意页面,页面里的 JS 去 POST
+ * http://<设备IP>:8080/mcp —— 浏览器会带 `Host: <设备IP>:8080`
+ * (所以单看 Host 没用,浏览器会把 Host 设成目标),但会带
+ * `Origin: http://evil.example`。我们的调用方是 native agent,
+ * **永远不发 Origin**,所以规则很干脆:
+ *   - Host 的主机部分必须是"我们自己"(当前 IP / 设备名 / 设备名.local)
+ *   - 带了 Origin 就必须也是我们自己,否则拒
+ */
+static bool host_is_ours(const char *host)
+{
+    if (!host || !*host) {
+        return false;
+    }
+    /* 取主机部分:去掉端口和 DNS 根点 */
+    char h[160];
+    size_t n = strlen(host);
+    if (n >= sizeof(h)) {
+        n = sizeof(h) - 1;
+    }
+    memcpy(h, host, n);
+    h[n] = '\0';
+    char *colon = strrchr(h, ':');
+    if (colon) {
+        *colon = '\0';
+    }
+    n = strlen(h);
+    if (n && h[n - 1] == '.') {
+        h[n - 1] = '\0';
+    }
+
+    const char *ip = io_net_ip();
+    if (ip && *ip && !strcmp(h, ip)) {
+        return true;
+    }
+
+    const char *name = io_cfg_device_name();
+    if (name && *name) {
+        if (!strcasecmp(h, name)) {
+            return true;
+        }
+        /* "<name>.local" —— mDNS 名。
+         * ★ ".local" 是 6 个字符 + 结尾 NUL = 7 字节,拷 6 字节会漏掉 NUL,
+         *   后面接栈垃圾,strcasecmp 必然不等(踩过)。 */
+        char fqdn[192];
+        const size_t nl = strlen(name);
+        if (nl + sizeof(".local") <= sizeof(fqdn)) {
+            memcpy(fqdn, name, nl);
+            memcpy(fqdn + nl, ".local", sizeof(".local"));   /* 含结尾 NUL */
+            if (!strcasecmp(h, fqdn)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/* Origin 形如 "http://host:port" —— 只取 host 部分判断 */
+static bool origin_is_ours(const char *origin)
+{
+    if (!origin || !*origin) {
+        return true;             /* 没有 Origin = native agent,放行 */
+    }
+    const char *sep = strstr(origin, "://");
+    const char *hostpart = sep ? sep + 3 : origin;
+    char h[160];
+    size_t n = strlen(hostpart);
+    if (n >= sizeof(h)) {
+        n = sizeof(h) - 1;
+    }
+    memcpy(h, hostpart, n);
+    h[n] = '\0';
+    char *slash = strchr(h, '/');
+    if (slash) {
+        *slash = '\0';
+    }
+    return host_is_ours(h);
+}
+
+/* Content-Type 必须是 application/json(允许带 charset 参数) */
+static bool content_type_is_json(const char *ct)
+{
+    if (!ct) {
+        return false;
+    }
+    const char *p = ct;
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    if (strncasecmp(p, "application/json", 16) != 0) {
+        return false;
+    }
+    p += 16;
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    return *p == '\0' || *p == ';' || *p == ',';
+}
+
+/*
+ * 取请求头的值(拷贝一份)。
+ *
+ * IDF 的 httpd_req_get_hdr_value_str(r, field, val, val_size) 是**写进调用方的
+ * buffer**,没有"返回指针"的版本;而且文档明说:**httpd_resp_send() 之后请求头
+ * 会被清空** —— 所以必须在应答之前取出来。
+ */
+static bool req_header(httpd_req_t *req, const char *field, char *buf, size_t buf_size)
+{
+    if (!buf || buf_size == 0) {
+        return false;
+    }
+    buf[0] = '\0';
+    const esp_err_t rc = httpd_req_get_hdr_value_str(req, field, buf, buf_size);
+    if (rc != ESP_OK) {
+        buf[0] = '\0';
+        return false;
+    }
+    return true;
+}
+
+/*
+ * 抽干 body(有上限)。
+ *
+ * 为什么拒绝之前要先抽干:服务端带着**未读的请求体**关连接时,TCP 会发 RST,
+ * 客户端还没读到的响应就被丢弃 —— 客户端拿到的是"连接被重置"而不是状态码。
+ * 先把 body 读掉再回错误码,客户端才能干净地读到 413/403/415。
+ * 抽干量有上限(IO_MCP_MAX_DRAIN),超大 body 仍然快速拒绝。
+ */
+static void http_drain_body(httpd_req_t *req)
+{
+    size_t left = req->content_len;
+    if (left > IO_MCP_MAX_DRAIN) {
+        left = IO_MCP_MAX_DRAIN;
+    }
+    char sink[512];
+    int timeouts = 0;
+    while (left > 0) {
+        const size_t want = (left < sizeof(sink)) ? left : sizeof(sink);
+        const int r = httpd_req_recv(req, sink, want);
+        if (r <= 0) {
+            if (r == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 3) {
+                continue;
+            }
+            break;
+        }
+        timeouts = 0;
+        left -= (size_t)r;
+    }
+}
+
+/* Host / Origin 检查(GET 端点也要 —— /blob 装的是桌面帧) */
+static bool http_guard_host_origin(httpd_req_t *req)
+{
+    /* 1) Host 必须是我们自己 */
+    char host[160];
+    const bool have_host = req_header(req, "Host", host, sizeof(host));
+    if (!have_host || !host_is_ours(host)) {
+        ESP_LOGW(TAG, "reject: Host not allowed (%s)", have_host ? host : "(none)");
+        http_drain_body(req);
+        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "host not allowed");
+        return false;
+    }
+
+    /* 2) Origin(如果有)必须也是我们自己 */
+    char origin[192];
+    if (req_header(req, "Origin", origin, sizeof(origin)) && origin[0] &&
+        !origin_is_ours(origin)) {
+        ESP_LOGW(TAG, "reject: cross-origin request (%s)", origin);
+        http_drain_body(req);
+        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "origin not allowed");
+        return false;
+    }
+    return true;
+}
+
+/* POST 专用的完整加固:Host/Origin + Content-Type + body 大小 */
+static bool http_guard_request(httpd_req_t *req)
+{
+    if (!http_guard_host_origin(req)) {
+        return false;
+    }
+
+    /* 3) Content-Type 必须是 application/json */
+    char ct[64];
+    if (!req_header(req, "Content-Type", ct, sizeof(ct)) || !content_type_is_json(ct)) {
+        ESP_LOGW(TAG, "reject: bad Content-Type (%s)", ct[0] ? ct : "(none)");
+        http_drain_body(req);
+        httpd_resp_set_status(req, "415 Unsupported Media Type");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "Content-Type must be application/json\n");
+        return false;
+    }
+
+    /* 4) body 大小上限 */
+    if (req->content_len > IO_MCP_MAX_BODY) {
+        ESP_LOGW(TAG, "reject: body too large (%d > %d)",
+                 (int)req->content_len, (int)IO_MCP_MAX_BODY);
+        http_drain_body(req);
+        httpd_resp_send_err(req, HTTPD_413_CONTENT_TOO_LARGE, "body too large");
+        return false;
+    }
+
+    return true;
+}
+
+/* ------------------------------------------------------------------ */
 /* JSON-RPC 分发                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -892,8 +1159,20 @@ static cJSON *dispatch_rpc(const cJSON *req)
     cJSON *result = NULL;
 
     if (!strcmp(m, "initialize")) {
+        /*
+         * 协议版本协商:客户端报自己要的版本,我们支持就**原样回**,
+         * 不支持就回最新的那个(由客户端决定要不要继续)。
+         * 之前是固定回一个版本号,等于假装什么都同意。
+         */
+        const cJSON *ip = cJSON_GetObjectItem(req, "params");
+        const cJSON *want = cJSON_GetObjectItem(ip, "protocolVersion");
+        const char *chosen = proto_negotiate(cJSON_IsString(want) ? want->valuestring : NULL);
+        if (cJSON_IsString(want) && !proto_supported(want->valuestring)) {
+            ESP_LOGW(TAG, "initialize: client asked %s, we answer %s",
+                     want->valuestring, chosen);
+        }
         result = cJSON_CreateObject();
-        cJSON_AddStringToObject(result, "protocolVersion", IO_MCP_PROTO);
+        cJSON_AddStringToObject(result, "protocolVersion", chosen);
         cJSON *caps = cJSON_CreateObject();
         cJSON *tools = cJSON_CreateObject();
         cJSON_AddBoolToObject(tools, "listChanged", false);
@@ -1003,8 +1282,12 @@ static cJSON *rpc_ok(const cJSON *id, cJSON *result)
 
 static esp_err_t http_mcp_post(httpd_req_t *req)
 {
+    /* 请求加固:Host / Origin / Content-Type / body 大小,任一不合就拒 */
+    if (!http_guard_request(req)) {
+        return ESP_FAIL;
+    }
+
     char *body = NULL;
-    size_t len = 0;
     if (req->content_len > 0) {
         body = (char *)malloc(req->content_len + 1);
         if (!body) {
@@ -1035,7 +1318,6 @@ static esp_err_t http_mcp_post(httpd_req_t *req)
             got += r;
         }
         body[got] = '\0';
-        len = (size_t)got;
     }
 
     cJSON *req_json = body ? cJSON_Parse(body) : NULL;
@@ -1043,6 +1325,27 @@ static esp_err_t http_mcp_post(httpd_req_t *req)
     if (!req_json) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid JSON");
         return ESP_FAIL;
+    }
+
+    /*
+     * MCP-Protocol-Version 头:客户端在 initialize **之后**的每个请求都要带,
+     * 值就是协商出来的那个版本。我们不认识的版本直接拒(规范建议如此)。
+     * initialize 自己不查这个头 —— 它的版本在 body 里,走上面的协商。
+     */
+    {
+        const cJSON *m0 = cJSON_GetObjectItem(req_json, "method");
+        const bool is_init = cJSON_IsString(m0) && !strcmp(m0->valuestring, "initialize");
+        if (!is_init) {
+            char pv[32];
+            if (req_header(req, "MCP-Protocol-Version", pv, sizeof(pv)) && pv[0] &&
+                !proto_supported(pv)) {
+                ESP_LOGW(TAG, "reject: unsupported MCP-Protocol-Version (%s)", pv);
+                cJSON_Delete(req_json);
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                    "unsupported protocol version");
+                return ESP_FAIL;
+            }
+        }
     }
 
     char *resp = NULL;
@@ -1065,6 +1368,14 @@ static esp_err_t http_mcp_post(httpd_req_t *req)
                 cJSON_AddItemToArray(arr, err);
             }
         }
+        /* 全是通知 ⇒ 按规范回 202 Accepted + 空 body(不是空数组) */
+        if (cJSON_GetArraySize(arr) == 0) {
+            cJSON_Delete(arr);
+            cJSON_Delete(req_json);
+            httpd_resp_set_status(req, "202 Accepted");
+            httpd_resp_send(req, "", 0);
+            return ESP_OK;
+        }
         resp = cJSON_PrintUnformatted(arr);
         cJSON_Delete(arr);
     } else {
@@ -1072,7 +1383,12 @@ static esp_err_t http_mcp_post(httpd_req_t *req)
         const cJSON *id = cJSON_GetObjectItem(req_json, "id");
         cJSON *res = NULL;
         if (cJSON_IsString(method) && !strcmp(method->valuestring, "notifications/initialized")) {
-            httpd_resp_set_hdr(req, "Mcp-Session-Id", "ioagent-1");
+            /*
+             * 通知:按规范回 202 Accepted + 空 body。
+             * ★ 不再回 `Mcp-Session-Id` —— 我们是**无状态**服务,
+             *   之前硬编码一个假 session id 会让客户端以为有会话要维持。
+             */
+            httpd_resp_set_status(req, "202 Accepted");
             httpd_resp_send(req, "", 0);
             cJSON_Delete(req_json);
             return ESP_OK;
@@ -1091,7 +1407,7 @@ static esp_err_t http_mcp_post(httpd_req_t *req)
     cJSON_Delete(req_json);
 
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Mcp-Session-Id", "ioagent-1");
+    /* 无状态服务:不回 Mcp-Session-Id(以前硬编码 "ioagent-1",是假的) */
     if (resp) {
         httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
         free(resp);
@@ -1103,6 +1419,11 @@ static esp_err_t http_mcp_post(httpd_req_t *req)
 
 static esp_err_t http_blob_get(httpd_req_t *req)
 {
+    /* /blob 装的是目标机桌面帧,一样要防 DNS rebinding */
+    if (!http_guard_host_origin(req)) {
+        return ESP_FAIL;
+    }
+
     const char *tail = req->uri + strlen("/blob/");
     if (!*tail) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad blob id");
@@ -1142,6 +1463,11 @@ static esp_err_t http_blob_get(httpd_req_t *req)
  */
 static esp_err_t http_ping_get(httpd_req_t *req)
 {
+    /* /ping 会报设备名和 IP,一样要防 DNS rebinding */
+    if (!http_guard_host_origin(req)) {
+        return ESP_FAIL;
+    }
+
     char buf[160];
     snprintf(buf, sizeof(buf),
              "{\"ok\":true,\"device\":\"%s\",\"ip\":\"%s\",\"uptime_s\":%lld,\"mcp\":\"%s\"}",

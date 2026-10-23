@@ -22,6 +22,7 @@
 | M2 注入链路(2026-10-23 复测) | ✅ | 设备端 HID 注入**端到端打通并客观验收**:远程 `act macro=selftest` → 设备走完注入序列 → 目标机执行命令把 `INJECT_OK` 写回盘 → 设备在盘上看到 `INJ.TXT`(`marker_seen:true`);再 `act macro=launch_watcher` → `CAP.TXT` 出现、watcher 起帧(~2.2 fps)、设备经 `/blob` 回传**真实桌面帧**。US 布局表(95 字符)带自检 + 仓库内独立交叉校验脚本 `tools/check_us_layout.py`。**注入默认关**,只走远程显式触发(见决策表) |
 | M5 远程链路(2026-10-22) | ✅ | 设备侧 MCP server 落地(HTTP + JSON-RPC 2.0):`/mcp` + `/ping` + `/blob/b0..3`,5 个工具(`device/info`/`act`/`observe`/`watcher/status`/`deploy_payload`)。实测闭环:远程下发 → flash → 开机 overlay → 设备只读解析 → HTTP 回传 **sha256 逐字节一致**;`act(hotkey win+r)` 目标机窗口列表新增「运行」。凭据走 NVS + UART0 控制台配网(**不进仓库/不进固件**)。TLS-PSK 待做 |
 | M6 mDNS 发现(2026-10-23) | ✅ | 设备用 **lwIP 原生 mdns responder**(不引 esp-mdns,组件管理器关着也能离线复现)广播 `_ioagent._tcp.local`。宿主侧 `tools/discover.py` 自带解析器(`--json` 直接给 MCP 端点),实测从 `ioagent-lab.local` 解出 `172.17.21.225:8080`。**踩了两坑**:① mDNS 装配**必须在 TCP/IP 线程里做**(`sys_timeout` 定时器链表数据竞争 ⇒ 状态机卡在 PROBING ⇒ 注册成功但线上一个包都不发、也不应答);② 宿主侧**必须 `IP_ADD_MEMBERSHIP` 加入 224.0.0.251**,绑端口 ≠ 入组,AP 开着 IGMP snooping 时不入组就收不到组播应答 |
+| M7 MCP 接口硬化(2026-10-23) | ✅ | 请求路径硬化(P2)+ 协议细节(P4)一并落地:body 上限 128 KB → 413、`Content-Type` 非 JSON → 415、`Host`/`Origin` 绑定设备自己 → 403(防 DNS rebinding)、协议版本协商(支持 2024-11-05/2025-03-26/2025-06-18)、去掉假 session id(无状态,不发 `Mcp-Session-Id`)、通知回 202。**拒绝前先抽干 body**(带未读请求体关连接会发 RST,客户端只看到"连接被重置"而不是状态码)。验收:`tools/mcp_hardening_probe.py` **17 项全绿**,MCP 五工具与 mDNS 发现回归正常 |
 
 - **实板**:DevKitC-1-N16R8(Flash 16MB + Octal PSRAM 8MB,esptool 实测确认)。
 - **主机侧枚举**:`HID\VID_303A&PID_8001&MI_00&COL01`(HID Keyboard Device)、
@@ -64,9 +65,9 @@
 | # | 项目 | 现状 / 要点 |
 |---|---|---|
 | P1 | ✅ **已做**:单例 + `busy` 语义落地(2026-10-23) | 长操作(`act` 的 `macro` / 超过 16 字符的 `type`、以及 `deploy_payload` 写 flash)走**单例槽**;忙时新的动作请求**立刻回 `busy`**。长操作移出 httpd task(worker task),httpd task 一直能应答 ⇒ busy 物理上可达;发起方不等结果,结果由盘上标记(`INJ.TXT`/`CAP.TXT`)回读。**没有** job 状态机/轮询端点。实测:受理 119–300ms、busy 应答 84–412ms、动作期间读请求 53–225ms、槽 10.7–14.9s 释放。**顺带修掉一个真 bug**:读 body 的 `continue` 没上限 → 客户端发一半 body 就静默会把 httpd 唯一的 task 永久卡死(症状:设备还活着但新连接被拒) |
-| P2 | 请求路径硬化 | ① body 大小上限(现在没限)② `Content-Type` 不对要回 **415** ③ `Origin` + `Host` 必须绑定设备 IP / mDNS 名(**DNS rebinding** 防护) |
+| P2 | ✅ **已做**:请求路径硬化(2026-10-23) | ① body 上限 **128 KB**(超了回 413)——最大的合法请求是 `deploy_payload`(64 KB 原字节 → base64 约 87 KB),上限的意义是**不让 `content_len` 变成无界的 malloc**(httpd 只有一个 task)② `Content-Type` 不是 `application/json` 回 **415** ③ `Origin` + `Host` 绑定设备自己(当前 IP / 设备名 / 设备名.local)——**DNS rebinding** 防护,调用方是 native agent 永不发 `Origin`,所以带 `Origin` 且不是我们就拒。`/blob/*`(`/ping` 也一样(前者装的是桌面帧)。**拒绝前先抽干 body**:服务端带着未读请求体关连接会发 RST,客户端就只看到"连接被重置"而不是状态码。验收:`tools/mcp_hardening_probe.py` **17 项全绿** |
 | P3 | 设备侧鉴权 | 明文 HTTP 下**局域网任意主机当前都能调 `act`**(注入是破坏性操作)。用 PSK token 头;与 TLS-PSK 双向鉴权一起做 |
-| P4 | 协议细节 | ① 协议版本**协商**(现在固定 `2025-06-18`)② **别发假的 session id**(现在硬编码 `Mcp-Session-Id: ioagent-1`)→ 改无状态 |
+| P4 | ✅ **已做**:协议细节(2026-10-23) | ① **协议版本协商**:支持 `2024-11-05` / `2025-03-26` / `2025-06-18`;客户端 `initialize` 报什么我们支持就**原样回**,不支持就回最新的 `2025-06-18`(由客户端决定要不要继续)。initialize 之后的请求带 `MCP-Protocol-Version` 头,值不认识直接回 **400** ② **去掉假的 session id**:以前硬编码 `Mcp-Session-Id: ioagent-1`,我们是**无状态**服务,回一个假 session id 会让客户端以为有会话要维持 —— 现在**根本不发这个头**,通知按规范回 **202 + 空 body** |
 | P5 | TLS-PSK 双向鉴权(M5 收尾) | **mDNS 发现已于 2026-10-23 落地**(见 M6 行),本项只剩 TLS-PSK。明文 HTTP 下局域网任意主机当前都能调 `act` |
 | P6 | 不依赖 IME 的 bootstrap 通道 | IME 强制序列(`Ctrl+Space` + `Shift`)**只对微软拼音成立**,其它输入法未验证;且 **agent 不在目标机上时无法回读 IME 状态**(回读靠 agent 或 watcher,watcher 又要靠注入拉起 → 循环)。需要一条"不经过 IME 的引导命令"(如只含符号的 Alt+numpad 序列,或换一条不走文本框的通道) |
 | P7 | 注入命令的落地方式 | 当前命令走 **Win+R 文本框**(要处理 IME、历史预填、运行框行为)。长期更稳的做法:命令先由设备落到盘上,目标机侧用**一次性启动器**执行,输入面尽量小 |
