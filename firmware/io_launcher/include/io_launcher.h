@@ -64,6 +64,14 @@ esp_err_t io_launcher_focus_reset(void);
 esp_err_t io_launcher_run_selftest(void);
 
 /**
+ * 上一次注入自检的结果(true = 通过)。
+ *
+ * 给设备状态/LED 语义用:自检失败 = "手不灵",是现场最该被看见的一类故障。
+ * 设备自己就能测出来(自检命令在目标机上有没有写出标记文件)。
+ */
+bool io_launcher_last_selftest_ok(void);
+
+/**
  * 单独按一次 Shift(微软拼音的"中/英文切换",toggle)。
  *
  * 只在**知道当前是中文态**时用(探针失败之后)。它不输入任何字符,即使目标机

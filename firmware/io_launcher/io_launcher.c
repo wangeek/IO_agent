@@ -155,28 +155,42 @@ static esp_err_t inject_command_ime(const char *cmd, bool shift_ime)
     return io_hid_keyboard_tap(IO_HID_KEY_ENTER, IO_HID_KEY_HOLD_MS);
 }
 
+/*
+ * 只有"设备自己能测出来"的状态才配 LED 语义(见 README 决策表):
+ * 这里记的是**注入自检有没有通过** —— 自检失败意味着"手不灵",
+ * 是现场最需要被看见的一类故障。
+ */
+static bool s_last_selftest_ok = true;
+
+bool io_launcher_last_selftest_ok(void)
+{
+    return s_last_selftest_ok;
+}
+
 /* 注入自检:确认 HID 注入链路真的到达了目标机。 */
 static bool inject_selftest(void)
 {
     ESP_LOGI(TAG, "injection self-test: typing the marker command ...");
     if (inject_command(SELFTEST_CMD) != ESP_OK) {
         ESP_LOGE(TAG, "injection self-test: could not type the command");
+        s_last_selftest_ok = false;
         return false;
     }
     for (int i = 0; i < INJ_POLL_TRIES; i++) {
         vTaskDelay(pdMS_TO_TICKS(INJ_POLL_MS));
         if (io_disk_find_file(INJ_FILE, NULL)) {
             ESP_LOGI(TAG, "injection self-test PASSED (%s appeared)", INJ_FILE);
+            s_last_selftest_ok = true;
             return true;
         }
     }
     ESP_LOGE(TAG, "injection self-test FAILED (%s never appeared) -- "
              "HID injection did not reach the host", INJ_FILE);
+    s_last_selftest_ok = false;
     return false;
 }
 
-/*
- * 注入自检 = **IME 态探针**。
+/* 注入自检 = **IME 态探针**。
  *
  * INJ.TXT 出现 = 刚才那条命令是**纯 ASCII** 打进去并跑起来了
  * (命令里含 % \ > @ ( ) 等符号,中文态下必然被打成中英混排 → 跑不起来)。

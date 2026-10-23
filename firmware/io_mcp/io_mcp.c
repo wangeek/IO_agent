@@ -274,6 +274,43 @@ static cJSON *observe_snapshot(const char *file, const char *tag)
 /* 工具:device/info                                                     */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* 设备状态码(LED 语义)                                                 */
+/* ------------------------------------------------------------------ */
+/*
+ * 一个 int,不多不少。语义表(见 README 决策表):
+ *   0 就绪      —— 已联网 + MCP 在服务
+ *   1 启动中    —— 刚上电,还没开始连网
+ *   2 网络未就绪 —— 在连/没配网/掉线重连
+ *   3 动作执行中 —— 收到 act,执行期间持续亮
+ *   4 故障      —— 上次注入自检失败("手不灵")
+ *
+ * 原则:只放**设备自己能测出来**、且**现场的人会据此行动**的状态;
+ * 颜色与节奏的对应只写在文档里,JSON 里不带颜色/文案/子状态。
+ */
+#define IO_LED_READY        0
+#define IO_LED_BOOTING      1
+#define IO_LED_NET_DOWN     2
+#define IO_LED_ACT_BUSY     3
+#define IO_LED_FAULT        4
+
+static int led_state(void)
+{
+    if (s_op_busy) {
+        return IO_LED_ACT_BUSY;      /* 动作执行中,优先级最高 */
+    }
+    if (!io_launcher_last_selftest_ok()) {
+        return IO_LED_FAULT;         /* 上次注入自检失败 */
+    }
+    if (!io_net_connect_started()) {
+        return IO_LED_BOOTING;       /* 还没发起过连接 */
+    }
+    if (!io_net_is_connected()) {
+        return IO_LED_NET_DOWN;
+    }
+    return IO_LED_READY;
+}
+
 static cJSON *tool_device_info(void)
 {
     cJSON *o = cJSON_CreateObject();
@@ -298,6 +335,9 @@ static cJSON *tool_device_info(void)
 
     /* 单例槽状态:agent 轮询它就知道后台动作跑完没有 */
     cJSON_AddBoolToObject(o, "busy", s_op_busy);
+
+    /* 设备状态码:一个 int(语义见 README 决策表"LED 语义"那一行) */
+    cJSON_AddNumberToObject(o, "led", led_state());
 
     uint32_t count = 0;
     const io_slot_desc_t *tbl = io_disk_slot_table(&count);
