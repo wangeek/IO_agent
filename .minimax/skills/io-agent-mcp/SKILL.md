@@ -7,7 +7,7 @@ description: |
   IO_Agent dongle plugged into it — phrases like "用 IO_Agent 控制那台机器",
   "看这台机器的屏幕", "远程点一下那台电脑", "dongle 注入", "截那台机器的图",
   "the other PC", "remote desktop via the dongle". Covers device discovery over
-  mDNS, the five MCP tools, and the injection discipline (single trigger, never
+  mDNS, the six MCP tools, and the injection discipline (single trigger, never
   auto-retry, IME probe before typing). Do NOT use for generic remote control
   that does not go through this dongle, for building/flashing its firmware, or
   for reading files on the local machine.
@@ -30,6 +30,20 @@ you ──WiFi──▶ dongle ──USB HID──▶ target machine's keyboard+
 So "the target machine" and "the host you run on" are two different computers.
 The dongle is the only thing that bridges them.
 
+## The six tools
+
+| tool | what it does | touches the target machine? |
+|---|---|---|
+| `status` | identity, USB/HID link state, LED code, slot table, whether the watcher runs | no |
+| `ls` | list the shared disk: name, size, last-write time | no |
+| `read` | read one file off the shared disk by 8.3 name | no |
+| `capture` | the **newest** frame on the disk, as an MCP image block | no |
+| `input` | inject **one** action (keyboard / mouse / macro) | **yes** |
+| `update` | store a payload into a flash slot (effective at next boot) | no |
+
+Naming rule: all six are **one lowercase verb, no separators**. `read` takes a
+`name`; `input` takes an `action`; `update` takes a `slot`.
+
 ## Inputs to collect
 
 - **Device name** — the mDNS instance name, `ioagent-lab` by default. If the
@@ -37,8 +51,8 @@ The dongle is the only thing that bridges them.
   selects it.
 - **Permission to inject** — injecting keystrokes into a live machine is
   destructive. If the request implies *typing into the target machine* and the
-  user has not said it is a test/sandbox machine, confirm first. Observation
-  (`observe`) is read-only and needs no confirmation.
+  user has not said it is a test/sandbox machine, confirm first. The read-only
+  tools (`status`, `ls`, `read`, `capture`) need no confirmation.
 - **Whether the target machine is unattended** — a locked screen turns injected
   keystrokes into PIN input and can lock the account out.
 
@@ -59,12 +73,12 @@ OS usually cannot resolve `.local` names, so this script speaks mDNS directly
 and joins `224.0.0.251` itself.
 
 If it prints nothing: the dongle is unpowered, it is on a different subnet, or
-its mDNS responder is down (check `device/info.led` — see step 2).
+its mDNS responder is down (check `status.led` — see step 2).
 
 ### 2. Health check before anything else
 
 ```bash
-python scripts/mcp_call.py --endpoint $EP --info
+python scripts/mcp_call.py --endpoint $EP --status
 ```
 
 Read these fields and stop early if they are wrong:
@@ -76,6 +90,7 @@ Read these fields and stop early if they are wrong:
 | `hid.endpoint_ready` | the HID endpoint is being polled | `false` ⇒ the target machine is not reading input |
 | `busy` | an action is running right now | `true` ⇒ wait and re-poll; do **not** queue work |
 | `led` | 0 ready / 1 booting / 2 network not ready / 3 acting / 4 fault | priority 3 > 4 > 1 > 2 > 0: you will only ever see one value. `4` means the last injection self-test failed — the "hand" is broken. |
+| `watcher.running` | the target's watcher script is up | `false` ⇒ there is no frame to look at (see step 3) |
 
 ### 3. See the screen (read-only)
 
@@ -84,30 +99,38 @@ target machine by a **watcher** script that writes them to the dongle's virtual
 disk.
 
 ```bash
-python scripts/mcp_call.py --endpoint $EP --tool watcher/status
-python scripts/mcp_call.py --endpoint $EP --tool observe --args '{"target":"preview"}'
+python scripts/mcp_call.py --endpoint $EP --tool capture
 ```
 
-`observe` returns a `url`; fetch it with
+`capture` picks the frame with the **newest last-write time** and returns it as
+a native MCP `image` block, so your vision capability can look at it directly.
+The result also names the file it came from (`SNAP_P.JPG` = preview,
+`SNAP_A.JPG` = full, `SNAP_R.JPG` = roi).
+
+To read a **specific** file (a marker file, or a frame by name):
+
+```bash
+python scripts/mcp_call.py --endpoint $EP --tool ls
+python scripts/mcp_call.py --endpoint $EP --tool read --args '{"name":"INJ.TXT"}'
+```
+
+`read` returns text inline, an image block for JPEGs, and a `url` for anything
+too large to inline — fetch that with:
 
 ```bash
 python scripts/mcp_call.py --fetch <url> --out frame.jpg
 ```
 
-`target` values: `preview` (`SNAP_P.JPG`), `full` (`SNAP_A.JPG`), `roi`
-(`SNAP_R.JPG`), `diff` (returns `DIFF.IDX` as **text**, not an image), or any
-8.3 filename on the volume (e.g. `INJ.TXT`, `CAP.TXT`) to read it back.
-
 Two things that bite here:
 
-- **Fetch the frame before the next `observe`.** The device keeps only 4 frame
-  slots and reuses them in a ring, so the next `observe` overwrites the one you
-  were given a URL for. Fetch → then observe again.
-- **Then actually look at the frame.** A saved JPEG is not a result — pass it to
-  your image-reading capability and describe what is on the screen. "I saved
-  frame.jpg" is not an answer to "what is on that screen".
+- **Then actually look at the frame.** A returned image block is not a result
+  until you have described what is on the screen. "I fetched the frame" is not
+  an answer to "what is on that screen".
+- **Frames are not overwritten by reading.** The device reads the file straight
+  off the volume; there is no slot ring to race against. Fetch it, read it, then
+  capture again whenever you want a newer one.
 
-If `watcher/status` says `running:false`, the watcher is not up. There are two
+If `status.watcher.running` is `false`, the watcher is not up. There are two
 ways to start it, and only one of them touches the target machine:
 
 - **Ask the user to start it by hand** on the target machine — run the
@@ -119,11 +142,11 @@ ways to start it, and only one of them touches the target machine:
 
 ### 4. Act on the target machine (destructive)
 
-**Gate — do not skip this.** Every `act` call, including `macro=selftest` and
+**Gate — do not skip this.** Every `input` call, including `macro=selftest` and
 `macro=ime_toggle`, **types real keystrokes into the target machine**. The
 self-test is not a read-only probe: it opens a Run box and executes a command
 there. If the user has not authorised injecting into that machine, **send no
-`act` at all** — not even a "harmless" one — and report what you can do
+`input` at all** — not even a "harmless" one — and report what you can do
 read-only instead. When in doubt, ask.
 
 Read `references/injection-playbook.md` before your first injection. The short
@@ -133,14 +156,14 @@ version:
   landed, ask the user before sending it again — repeated keystrokes into a
   live machine are how accounts get locked out.
 - **Probe the input mode before typing.** On a Chinese-locale Windows the
-  injected text comes out as garbage. Send `act macro=selftest` and check
+  injected text comes out as garbage. Send `input macro=selftest` and check
   whether `INJ.TXT` appears; only type after the probe passes. Note that
   `macro=launch_watcher` does **not** probe by itself — the probe is a separate
   `macro=selftest` call, and its two jobs are to learn the current input mode
   and to prove that keystrokes still reach the host at all.
 - **Long actions are asynchronous.** `macro=*` and `type` of more than 16
   characters come back as `{"accepted":true,"busy":true}` and finish in the
-  background. Poll `device/info` until `busy` is `false`, then read the marker
+  background. Poll `status` until `busy` is `false`, then read the marker
   file to learn the outcome.
 - **Judge success by files, not by the reply.** The device cannot see the
   target machine's screen. `INJ.TXT` (written by the injected command) and
@@ -154,19 +177,26 @@ is not the same as "it worked".
 
 ## Output contract
 
-Tool results arrive as MCP `content` blocks, so the real payload is a JSON
-string inside `result.content[0].text` — **parse it a second time**:
+Every tool result carries the same three things:
+
+- `structuredContent` — the machine-readable payload. **Read this.**
+- `content[0].text` — the same JSON as a text block (without any base64 image
+  body).
+- `isError` — `true` when the tool itself failed.
 
 ```json
-{"result": {"content": [{"type": "text", "text": "{\"device\":\"ioagent-lab\", ...}"}]}}
+{"result": {"structuredContent": {"ok": true, "busy": false, "led": 0},
+            "content": [{"type": "text", "text": "{\"ok\":true,...}"}],
+            "isError": false}}
 ```
 
-`scripts/mcp_call.py` already unwraps and re-prints that, so prefer it over
-hand-rolling JSON-RPC.
+**`isError` is set on every tool now.** A failing call looks like
+`isError:true` plus `ok:false` inside the payload — check both. Protocol-level
+problems (an unknown tool name) come back as a top-level JSON-RPC `error`
+object instead, with code `-32602`.
 
-Do not use the MCP `isError` flag to decide whether something worked — only
-`act` and `deploy_payload` set it. `observe` and `watcher/status` report
-failure as `ok:false` inside the payload, so always read that field.
+`scripts/mcp_call.py` already unwraps and re-prints this, so prefer it over
+hand-rolling JSON-RPC.
 
 Everything else (schemas, response fields, error codes, request rules) is in
 `references/mcp-contract.md`.
@@ -175,16 +205,17 @@ Everything else (schemas, response fields, error codes, request rules) is in
 
 | symptom | cause | action |
 |---|---|---|
-| `discover.py` finds nothing | dongle off / other subnet / mDNS down | check power, then `--info` on a known IP if you have one |
+| `discover.py` finds nothing | dongle off / other subnet / mDNS down | check power, then `--status` on a known IP if you have one |
 | `403` | `Host`/`Origin` not bound to the device | use the exact IP or `<name>.local`; do not send an `Origin` header |
 | `415` | `Content-Type` not `application/json` | the scripts always set it; only hand-written curl needs the header |
-| `413` | request body over 128 KB | split the payload; use `deploy_payload` for bulk instead |
+| `413` | request body over 128 KB | split the payload; use `update` for bulk instead |
 | `400` | `MCP-Protocol-Version` not one of the supported versions | send `2025-06-18` |
-| `{"busy":true}` | another action is running | wait, re-poll `--info`; do not queue |
-| `led:4` | last injection self-test failed | the target machine likely blocked or the USB link dropped — re-check `--info` |
-| `observe` returns `ok:false, note:"file not on the volume"` | watcher not running, or the device rebooted (RAM disk is rebuilt on every boot) | `watcher/status`; if the device rebooted, the watcher must be started again |
+| `405` on `GET /mcp` | expected | the device has no SSE stream; POST to `/mcp` |
+| `{"busy":true}` | another action is running | wait, re-poll `--status`; do not queue |
+| `led:4` | last injection self-test failed | the target machine likely blocked or the USB link dropped — re-check `--status` |
+| `capture` returns `isError:true` | watcher not running, or the device rebooted (RAM disk is rebuilt on every boot) | check `status.watcher.running`; if the device rebooted, the watcher must be started again |
 | injected text comes out as Chinese/garbled | the target's IME was in Chinese mode | run the selftest probe; if it fails, send `macro=ime_toggle` and probe again |
-| the device stops answering HTTP but `discover.py` still finds it | the dongle rebooted (a crash or a power event); mDNS and WiFi come back before HTTP does | re-run `--info`; `uptime_s` dropping to a small number means it rebooted. If it stays dead, the dongle needs a physical replug |
+| the device stops answering HTTP but `discover.py` still finds it | the dongle rebooted (a crash or a power event); mDNS and WiFi come back before HTTP does | re-run `--status`; `uptime_s` dropping to a small number means it rebooted. If it stays dead, the dongle needs a physical replug |
 | every call times out but mDNS still works | the device's HTTP server is busy with one slow request | the device serves one request at a time; wait for it rather than piling on more calls |
 
 ## Examples
@@ -194,29 +225,25 @@ Everything else (schemas, response fields, error codes, request rules) is in
 ```
 $ python scripts/discover.py
 http://172.17.21.225:8080/mcp
-$ python scripts/mcp_call.py --endpoint http://172.17.21.225:8080/mcp --info
-  ... "usb":{"link_alive":true}, "busy":false, "led":0 ...
-$ python scripts/mcp_call.py --endpoint http://172.17.21.225:8080/mcp --tool watcher/status
-  ... {"running":true,"cap_bytes":128} ...
-$ python scripts/mcp_call.py --endpoint http://172.17.21.225:8080/mcp --tool observe --args '{"target":"preview"}'
-  ... {"ok":true,"bytes":20452,"url":"http://172.17.21.225:8080/blob/b0"} ...
-$ python scripts/mcp_call.py --fetch http://172.17.21.225:8080/blob/b0 --out frame.jpg
-saved 20452 bytes -> frame.jpg
+$ python scripts/mcp_call.py --endpoint http://172.17.21.225:8080/mcp --status
+  ... "usb":{"link_alive":true}, "busy":false, "led":0, "watcher":{"running":true} ...
+$ python scripts/mcp_call.py --endpoint http://172.17.21.225:8080/mcp --tool capture
+  ... {"ok":true,"file":"SNAP_P.JPG","bytes":20452}, image block ...
 ```
 
 **Example 2 — send one keystroke and verify it landed**
 
 ```
 $ python scripts/mcp_call.py --endpoint http://172.17.21.225:8080/mcp \
-    --tool act --args '{"action":"tap","key":"ENTER"}'
+    --tool input --args '{"action":"tap","key":"ENTER"}'
   ... {"ok":true,"action":{"key":"ENTER"}} ...
-$ python scripts/mcp_call.py --endpoint http://172.17.21.225:8080/mcp --info
+$ python scripts/mcp_call.py --endpoint http://172.17.21.225:8080/mcp --status
   ... "busy":false ...
 ```
 
 A short action returns the real result inline. `ok:true` here means the device
 emitted the keystroke — it does **not** prove the target machine reacted; for
-that, check the target's own evidence (marker file or a fresh frame).
+that, check the target's own evidence (marker file or a fresh `capture`).
 
 ## Windows (win32) platform notes
 
@@ -224,17 +251,17 @@ PowerShell hands arguments to native programs by re-parsing them, and it
 **strips the inner double quotes of a JSON argument**:
 
 ```powershell
-python mcp_call.py --args '{"target":"preview"}'   # arrives as {target:preview}  <- broken
-python mcp_call.py --args '{\"target\":\"preview\"}' # arrives intact
-python mcp_call.py --% --args "{\"target\":\"preview\"}"  # stop-parsing, works
+python mcp_call.py --args '{"name":"INJ.TXT"}'    # arrives as {name:INJ.TXT}  <- broken
+python mcp_call.py --args '{\"name\":\"INJ.TXT\"}'  # arrives intact
+python mcp_call.py --% --args "{\"name\":\"INJ.TXT\"}"  # stop-parsing, works
 ```
 
 Reliable forms, in order of preference:
 
 1. Put the JSON in a file and pass `@file`:
    ```powershell
-   [System.IO.File]::WriteAllText("$env:TEMP\args.json", '{"target":"preview"}', (New-Object System.Text.UTF8Encoding($false)))
-   python mcp_call.py --endpoint $EP --tool observe --args '@args.json'
+   [System.IO.File]::WriteAllText("$env:TEMP\args.json", '{"name":"INJ.TXT"}', (New-Object System.Text.UTF8Encoding($false)))
+   python mcp_call.py --endpoint $EP --tool read --args '@args.json'
    ```
    Note the explicit `UTF8Encoding($false)`: `Set-Content -Encoding UTF8` writes a
    **BOM**, which older JSON readers reject. (`mcp_call.py` now tolerates a BOM,

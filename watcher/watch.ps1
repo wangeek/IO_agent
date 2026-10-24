@@ -514,7 +514,7 @@ while ($true) {
             $preview.Dispose()
         }
     } catch {
-        # 写失败**不等于**载波丢了:设备正在读盘(observe 会读盘)时,宿主
+        # 写失败**不等于**载波丢了:设备正在读盘(read/capture 会读盘)时,宿主
         # 这一侧的文件改名/写入可能撞车。载波真丢了(卷目录不见了)才退出;
         # 否则重试 —— "watcher 跑两帧就没了"就是撞车导致的。
         Write-Log "capture/write failed (iter $iter): $($_.Exception.Message)"

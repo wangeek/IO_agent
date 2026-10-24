@@ -5,7 +5,7 @@
  *   POST /mcp        JSON-RPC 2.0
  *   GET  /blob/<id>  观察帧原字节
  *
- * 工具:device/info | act | observe | watcher/status | deploy_payload
+ * 工具:status | ls | read | capture | input | update
  */
 #pragma once
 

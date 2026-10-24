@@ -92,8 +92,8 @@ agent 拉帧时可能拿到几百毫秒前的旧帧。机制:
 | 项 | 评估 |
 |---|---|
 | 传输 | 用 **Streamable HTTP**(单端点 POST + JSON-RPC 2.0);不用 SSE 双通道,MCU 上更省 |
-| 帧的返回 | `resources/read` 返回 blob URI(裸二进制),避免 300KB base64 膨胀 |
-| 工具集 | 设备端只需 4 个:`act` / `observe` / `watcher(start\|stop\|status)` / `device(info)`。**2026-10-22 增第 5 个 `deploy_payload`**(T2 运行时下发,见 `agent-interface-mcp.md` §二)。**已落地**:`device/info` / `act` / `observe` / `watcher/status` / `deploy_payload` |
+| 帧的返回 | 小文件内联进工具结果;JPEG 走 MCP 原生 image 块;太大的给 `GET /files/<name>` URL(避免 300KB base64 膨胀) |
+| 工具集 | 设备端只需 6 个:`status` / `ls` / `read` / `capture` / `input` / `update`。**命名规则:全是动词、全小写单词、零分隔符**(2026-10-24 改名的定案)。`update` = 2026-10-22 增的 T2 运行时下发(见 `agent-interface-mcp.md` §二)。**已落地**:`status` / `ls` / `read` / `capture` / `input` / `update` |
 | 内存 | TLS + HTTP + JSON + 300KB 帧缓冲,8MB PSRAM 够;JSON 缓冲要复用 |
 | CPU | TLS-PSK 软件加密约 5-15MB/s → 300KB 约 20-60ms,可接受 |
 | 帧节奏 | 2fps 预览 + 按需全帧;设备端做**字节搬运**,不做解码(哑设备原则不变) |

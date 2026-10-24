@@ -5,7 +5,7 @@
 用来判定"设备打出去的字到底对不对"(IME 吃掉 / 布局错位 / 历史预填没清掉)。
 
 注意:长文本的 type 现在是**异步**的(走 worker task),所以打完必须等
-device/info 的 busy=false 才能读,否则读到的是历史预填或半截字。
+status 的 busy=false 才能读,否则读到的是历史预填或半截字。
 
 用法:
     python tools/type_readback.py 172.17.21.225
@@ -53,7 +53,7 @@ def call(url, name, args=None):
 def wait_idle(url, timeout=40):
     t0 = time.time()
     while time.time() - t0 < timeout:
-        info = call(url, "device/info")
+        info = call(url, "status")
         if not info.get("busy"):
             return time.time() - t0
         time.sleep(0.3)
@@ -120,12 +120,12 @@ def main():
     url = "http://%s:8080/mcp" % host
 
     print("=== 1) focus_reset (Win+M / Win+R / Ctrl+Space / Shift / Ctrl+A) ===")
-    r = call(url, "act", {"action": "macro", "macro": "focus_reset"})
+    r = call(url, "input", {"action": "macro", "macro": "focus_reset"})
     print("   ->", json.dumps(r, ensure_ascii=False)[:160])
     wait_idle(url)
 
     print("=== 2) type (异步) ===")
-    r = call(url, "act", {"action": "type", "text": text})
+    r = call(url, "input", {"action": "type", "text": text})
     print("   ->", json.dumps(r, ensure_ascii=False)[:160])
 
     print("=== 3) 等动作跑完(busy=false) ===")

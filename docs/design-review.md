@@ -108,7 +108,7 @@ README 目录列了不存在的 `docs/stage0-led-handshake.md`;项目无版本�
 "设备注册表 + 帧入库 + MCP server"。
 
 新架构:**设备 = MCP server**。agent 通过 mDNS 发现设备、用 TLS-PSK 连上、
-直接调用 `act` / `observe`。设备侧持有帧仓库(读 RAM disk)与目标机驻守脚本的拉起权。
+直接调用 `input` / `capture`。设备侧持有帧仓库(读 RAM disk)与目标机驻守脚本的拉起权。
 
 | 项 | 原 | 新 |
 |---|---|---|

@@ -4,20 +4,23 @@
  * 拓扑:设备是服务端,agent 主动连过来(mDNS: _ioagent._tcp.local)。
  *
  * 端点:
- *   POST /mcp        JSON-RPC 2.0(MCP Streamable HTTP)
- *   GET  /blob/<id>  观察帧原字节(observe 工具回传的 URL 指向这里)
+ *   POST /mcp         JSON-RPC 2.0(MCP Streamable HTTP)
+ *   GET  /mcp         405(我们不开 SSE 流,规范允许这样声明)
+ *   GET  /files/<name> 共享盘上某个文件的原始字节
+ *   GET  /ping        HTTP 存活探针
  *
- * 工具:
- *   device/info      设备身份与状态
- *   act              注入一个动作(键盘/鼠标/宏)
- *   observe          读目标机上的快照文件并回传 URL(设备不解码,只搬运)
- *   watcher/status   目标机 watcher 起没起
- *   deploy_payload   把引导内容落 flash(下次开机生效)
+ * 工具(全部是动词,全小写单词,零分隔符):
+ *   status    设备身份与状态(含 watcher 是否在跑)
+ *   ls        列共享盘
+ *   read      读共享盘上某个文件
+ *   capture   取最新一帧(按 FAT16 最后写入时间判)
+ *   input     注入一个动作(键盘/鼠标/宏)
+ *   update    把内容写进 flash 槽位(下次开机生效)
  *
  * ★ 安全语义(2026-10-22 事故后的定案)★
- *   - `act` **单次执行、零重试**:不因为失败就自动重发。
- *   - `act` 默认在注入前后各观察一次,把两张图的 URL 一起返回 ——
- *     **由 agent 自己判断"指令有没有生效"**,而不是靠日志里的"已发送"。
+ *   - `input` **单次执行、零重试**:不因为失败就自动重发。
+ *   - 注入前后各取一帧由 agent 自己用 capture 做 —— **由 agent 判断
+ *     "指令有没有生效"**,而不是靠日志里的"已发送"。
  *   - 开机自动拉起默认**关闭**(见 io_launcher/CMakeLists.txt)。
  */
 #include "io_mcp.h"
@@ -56,7 +59,7 @@ static const char *TAG = "io_mcp";
 /*
  * body 大小上限。
  *
- * 上限怎么定:最大的合法请求是 `deploy_payload` —— 把内容 base64 装进
+ * 上限怎么定:最大的合法请求是 `update` —— 把内容 base64 装进
  * AGENT.EXE 槽(64 KB 原字节 → base64 约 87 KB),所以 128 KB 够用还有富余。
  * 上限的意义不是"防大包"而是**不让 content_len 变成无界的 malloc**:
  * httpd 只有一个 task,一个超大 body 会把整个服务打死(读 body 的那一步
@@ -82,22 +85,129 @@ static const char *const IO_MCP_PROTO_SUPPORTED[] = {
 };
 
 /* ------------------------------------------------------------------ */
-/* 观察帧 blob 缓存                                                     */
+/* 共享盘读文件                                                          */
 /* ------------------------------------------------------------------ */
+/*
+ * 这个设备对外只有两件事:**读共享盘**、**往目标机送输入**。
+ * 盘是目标机可见的那张 FAT16 卷(watcher 把帧写在上面),agent 通过 mDNS
+ * 找到设备后直接读。所以文件读出来有两种去处:
+ *   - 够小 → 直接内联进 MCP 结果(文本块或 image 块)
+ *   - 太大 → 只给 URL,客户端自己去 GET /files/<name>
+ */
 
-#define IO_BLOB_SLOTS   4
-#define IO_BLOB_MAX     (256 * 1024)
+/* 内联进 MCP 结果的大小上限(超过就只给 URL)。 */
+#define IO_FILE_MAX_INLINE   (64 * 1024)
+/* 列目录一次最多看多少项(超过就截断并报 count)。 */
+#define IO_DIR_MAX            64
+/* 读一个文件时的缓冲(静态,httpd 单 task 用)。 */
+#define IO_FILE_BUF_MAX      (64 * 1024)
 
+/* watcher 写的帧文件(目标机上的脚本产出)。 */
+static bool name_is_frame(const char *name)
+{
+    static const char *const frames[] = { "SNAP_P.JPG", "SNAP_A.JPG", "SNAP_R.JPG" };
+    for (size_t i = 0; i < sizeof(frames) / sizeof(frames[0]); i++) {
+        if (!strcmp(name, frames[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* 原始字节通道的 URL(大文件/非 MCP 客户端走这里)。 */
+static char *files_url(const char *name)
+{
+    char *buf = (char *)malloc(96);
+    if (buf) {
+        snprintf(buf, 96, "http://%s:%d/files/%s", io_net_ip(), IO_MCP_PORT, name);
+    }
+    return buf;
+}
+
+/* JPEG 魔数(用来判断读出来的是不是图)。 */
+static bool bytes_are_jpeg(const uint8_t *p, size_t len)
+{
+    return len >= 3 && p[0] == 0xFF && p[1] == 0xD8 && p[2] == 0xFF;
+}
+
+/* ------------------------------------------------------------------ */
+/* 工具结果                                                            */
+/* ------------------------------------------------------------------ */
+/*
+ * MCP 有两条错误通道(规范 "Error Handling"):
+ *   - **协议错误**   → JSON-RPC error(未知工具、参数非法)
+ *   - **工具执行错误** → 结果里 isError:true(API 失败、输入不合法、业务错误)
+ *
+ * 之前只有 input / update 设 isError,读类工具的失败只是在内层 JSON 里
+ * 给 ok:false —— **合规的客户端会把失败当成功**。所以每个工具都返回这个结构,
+ * 由 tool_result() 统一决定 isError。
+ */
 typedef struct {
-    char     tag[16];      /* 来自哪个文件 */
-    size_t   len;
-    uint32_t seq;
-} io_blob_meta_t;
+    cJSON      *payload;    /**< 结构化结果(同时序列化进 TextContent) */
+    bool        is_error;   /**< 工具执行错误 → isError:true */
+    bool        has_image;  /**< payload 里的 image_b64 要作为 image 内容块发出 */
+    const char *mime;       /**< 图片类型 */
+} io_tool_out_t;
 
-static uint8_t       *s_blob_mem;
-static io_blob_meta_t s_blob[IO_BLOB_SLOTS];
-static uint32_t       s_blob_next;    /* 环形游标 */
-static uint32_t       s_blob_seq;
+/* 造一个工具结果。 */
+static io_tool_out_t tool_out(cJSON *payload, bool is_error)
+{
+    io_tool_out_t o = { payload, is_error, false, NULL };
+    return o;
+}
+
+/* 把结构化结果包成 MCP 的 CallToolResult。 */static cJSON *tool_result(const io_tool_out_t *out)
+{
+    cJSON *result = cJSON_CreateObject();
+    cJSON *content = cJSON_CreateArray();
+
+    /* 图片内容块 —— MCP 原生的二进制通道(base64 内联,客户端/视觉模型直接能用) */
+    char *b64 = NULL;
+    if (out->has_image) {
+        const cJSON *v = cJSON_GetObjectItem(out->payload, "image_b64");
+        if (cJSON_IsString(v)) {
+            b64 = (char *)malloc(strlen(v->valuestring) + 1);
+            if (b64) {
+                strcpy(b64, v->valuestring);
+            }
+        }
+    }
+
+    /* 文本块:结构化结果的序列化副本(规范:有结构化内容时也应给一份文本) */
+    {
+        cJSON *copy = cJSON_Duplicate(out->payload, true);
+        cJSON_DeleteItemFromObject(copy, "image_b64");
+        char *txt = cJSON_PrintUnformatted(copy);
+        cJSON_Delete(copy);
+
+        cJSON *t = cJSON_CreateObject();
+        cJSON_AddStringToObject(t, "type", "text");
+        cJSON_AddStringToObject(t, "text", txt ? txt : "{}");
+        free(txt);
+        cJSON_AddItemToArray(content, t);
+    }
+
+    if (b64) {
+        cJSON *img = cJSON_CreateObject();
+        cJSON_AddStringToObject(img, "type", "image");
+        cJSON_AddStringToObject(img, "data", b64);
+        cJSON_AddStringToObject(img, "mimeType", out->mime ? out->mime : "image/jpeg");
+        cJSON_AddItemToArray(content, img);
+        free(b64);
+    }
+
+    cJSON_AddItemToObject(result, "content", content);
+    if (out->is_error) {
+        cJSON_AddBoolToObject(result, "isError", true);
+    }
+    /* 结构化内容(规范里的 structuredContent) */
+    {
+        cJSON *sc = cJSON_Duplicate(out->payload, true);
+        cJSON_DeleteItemFromObject(sc, "image_b64");
+        cJSON_AddItemToObject(result, "structuredContent", sc);
+    }
+    return result;
+}
 
 /* ------------------------------------------------------------------ */
 /* 单例执行槽 + worker task                                            */
@@ -111,7 +221,7 @@ static uint32_t       s_blob_seq;
  * 第二个请求连 handler 都进不去,物理上拿不到 busy。挪到 worker task
  * 之后,httpd task 一直能应答,busy 才问得出来。
  *
- * 好处:注入进行中,**读类工具(observe / watcher/status / device/info)
+ * 好处:注入进行中,**读类工具(ls / read / capture / status)
  * 照常服务** —— 注入时"眼"是睁着的。
  *
  * 不引入 job 状态机/轮询端点:**判据本来就是盘上的标记文件**
@@ -202,6 +312,29 @@ static int b64_val(char c)
     return -1;
 }
 
+/* 字节 -> base64 字符串(调用方 free)。给 MCP 的 image 内容块用。 */
+static char *b64_encode(const uint8_t *in, size_t len)
+{
+    const size_t out_len = ((len + 2) / 3) * 4;
+    char *out = (char *)malloc(out_len + 1);
+    if (!out) {
+        return NULL;
+    }
+    size_t o = 0;
+    for (size_t i = 0; i < len; i += 3) {
+        const uint32_t b0 = in[i];
+        const uint32_t b1 = (i + 1 < len) ? in[i + 1] : 0;
+        const uint32_t b2 = (i + 2 < len) ? in[i + 2] : 0;
+        const uint32_t v = (b0 << 16) | (b1 << 8) | b2;
+        out[o++] = s_b64_alphabet[(v >> 18) & 0x3F];
+        out[o++] = s_b64_alphabet[(v >> 12) & 0x3F];
+        out[o++] = (i + 1 < len) ? s_b64_alphabet[(v >> 6) & 0x3F] : '=';
+        out[o++] = (i + 2 < len) ? s_b64_alphabet[v & 0x3F] : '=';
+    }
+    out[o] = '\0';
+    return out;
+}
+
 /* base64 -> 字节。返回解码后的长度,失败返回 -1。 */
 static int b64_decode(const char *in, uint8_t *out, size_t out_max)
 {
@@ -229,88 +362,40 @@ static int b64_decode(const char *in, uint8_t *out, size_t out_max)
 /* JSON 辅助                                                            */
 /* ------------------------------------------------------------------ */
 
-static cJSON *tool_result_text(const char *text, bool is_error)
-{
-    cJSON *res = cJSON_CreateObject();
-    cJSON *content = cJSON_CreateArray();
-    cJSON *item = cJSON_CreateObject();
-    cJSON_AddStringToObject(item, "type", "text");
-    cJSON_AddStringToObject(item, "text", text ? text : "");
-    cJSON_AddItemToArray(content, item);
-    cJSON_AddItemToObject(res, "content", content);
-    if (is_error) {
-        cJSON_AddBoolToObject(res, "isError", true);
-    }
-    return res;
-}
+/* JSON-RPC 的两种应答:错误 / 成功。定义在文件后部,这里先声明。 */
+static cJSON *rpc_error(const cJSON *id, int code, const char *msg);
+static cJSON *rpc_ok(const cJSON *id, cJSON *result);
 
-static char *blob_url(uint32_t idx)
+/*
+ * 从共享盘读一个文件。
+ *
+ * buf 必须是静态缓冲(httpd 是单 task,静态缓冲不会有并发问题;
+ * 栈上放不下 64 KB)。
+ *
+ * @return 读到的字节数;失败返回 0
+ */
+static size_t read_shared_file(const char *name, uint8_t *buf, size_t max)
 {
-    char *buf = (char *)malloc(96);
-    if (buf) {
-        snprintf(buf, 96, "http://%s:%d/blob/b%u", io_net_ip(), IO_MCP_PORT, (unsigned)idx);
-    }
-    return buf;
-}
-
-/* 把盘上的一个文件读进 blob 缓存,返回 blob 下标(-1 = 失败)。 */
-static int blob_store(const char *file, const char *tag)
-{
-    if (!s_blob_mem) {
-        return -1;
-    }
-    const uint32_t idx = s_blob_next % IO_BLOB_SLOTS;
-    s_blob_next++;
-
-    uint8_t *dst = s_blob_mem + (size_t)idx * IO_BLOB_MAX;
     size_t len = 0;
-    if (io_disk_read_file(file, dst, IO_BLOB_MAX, &len) != ESP_OK || len == 0) {
-        return -1;
-    }
-    strncpy(s_blob[idx].tag, tag, sizeof(s_blob[idx].tag) - 1);
-    s_blob[idx].tag[sizeof(s_blob[idx].tag) - 1] = '\0';
-    s_blob[idx].len = len;
-    s_blob[idx].seq = ++s_blob_seq;
-    return (int)idx;
-}
-
-/* observe 一次:把快照读进 blob,返回 JSON 描述(失败时也返回 JSON,带 ok=false)。 */
-static cJSON *observe_snapshot(const char *file, const char *tag)
-{
-    cJSON *o = cJSON_CreateObject();
     const int64_t t0 = esp_timer_get_time();
-    const int idx = blob_store(file, tag);
+    if (io_disk_read_file(name, buf, max, &len) != ESP_OK || len == 0) {
+        return 0;
+    }
     const int64_t dt_ms = (esp_timer_get_time() - t0) / 1000;
     /*
      * 慢读打点:读盘是从 FAT 簇链上拷到 PSRAM,正常是毫秒级。
-     * 一旦超过 500 ms 就说明有异常(簇链走得太远、或者内存被换出),
-     * 打出来才能在串口日志里对上"observe 卡住"这类现象。
+     * 超过 500 ms 就说明有异常(簇链走得太远、或内存被换出),
+     * 打出来才能在串口日志里对上"读盘卡住"这类现象。
      */
     if (dt_ms > 500) {
-        ESP_LOGW(TAG, "observe %s took %lld ms", file, (long long)dt_ms);
+        ESP_LOGW(TAG, "read %s took %lld ms", name, (long long)dt_ms);
     }
-    if (idx < 0) {
-        cJSON_AddBoolToObject(o, "ok", false);
-        cJSON_AddStringToObject(o, "file", file);
-        cJSON_AddStringToObject(o, "note",
-                               "file not on the volume (is the watcher running on the host?)");
-        return o;
-    }
-    char *url = blob_url((uint32_t)idx);
-    cJSON_AddBoolToObject(o, "ok", true);
-    cJSON_AddStringToObject(o, "file", file);
-    cJSON_AddStringToObject(o, "tag", s_blob[idx].tag);
-    cJSON_AddNumberToObject(o, "bytes", (double)s_blob[idx].len);
-    cJSON_AddNumberToObject(o, "seq", (double)s_blob[idx].seq);
-    if (url) {
-        cJSON_AddStringToObject(o, "url", url);
-        free(url);
-    }
-    return o;
+    return len;
 }
 
+
 /* ------------------------------------------------------------------ */
-/* 工具:device/info                                                     */
+/* 工具:status                                                         */
 /* ------------------------------------------------------------------ */
 
 /* ------------------------------------------------------------------ */
@@ -350,9 +435,10 @@ static int led_state(void)
     return IO_LED_READY;
 }
 
-static cJSON *tool_device_info(void)
+static io_tool_out_t tool_status(void)
 {
     cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
     cJSON_AddStringToObject(o, "device", io_cfg_device_name());
     cJSON_AddStringToObject(o, "fw", "m2-remote");
     cJSON_AddStringToObject(o, "ip", io_net_ip());
@@ -392,7 +478,25 @@ static cJSON *tool_device_info(void)
     }
     cJSON_AddItemToObject(o, "slots", slots);
     cJSON_AddNumberToObject(o, "payload_seq", (double)io_payload_active_seq());
-    return o;
+
+    /*
+     * watcher 在不在目标机上跑 —— 判据就是盘上有没有 CAP.TXT。
+     * (以前这是一个独立工具 watcher/status,现在并进 status:
+     *  设备只有一个"状态"入口,拆成两个反而让 agent 不知道该问哪个。)
+     */
+    {
+        io_file_info_t cap;
+        const bool running = io_disk_find_file("CAP.TXT", &cap);
+        cJSON *w = cJSON_CreateObject();
+        cJSON_AddBoolToObject(w, "running", running);
+        if (running) {
+            cJSON_AddNumberToObject(w, "cap_mtime", (double)cap.mtime);
+        }
+        cJSON_AddItemToObject(o, "watcher", w);
+    }
+
+    io_tool_out_t out = { o, false, false, NULL };
+    return out;
 }
 
 /* ------------------------------------------------------------------ */
@@ -540,7 +644,7 @@ static esp_err_t act_run(const cJSON *args, cJSON *detail)
 }
 
 /*
- * act 工具:单次执行、零重试(失败不自动重发)。
+ * input 工具:往目标机送一个输入动作。单次执行、零重试(失败不自动重发)。
  *
  * 同步模型(2026-10-23):
  *   - **短动作**(tap/hotkey/move/click/scroll/短 type)在 httpd task 里直接执行,
@@ -550,12 +654,12 @@ static esp_err_t act_run(const cJSON *args, cJSON *detail)
  *     (INJ.TXT / CAP.TXT)判定 —— 标记文件本来就是状态,不需要 job 状态机。
  *   - 设备是**单例**:同一时刻只跑一个动作。忙时再来一个动作请求 →
  *     **直接回 busy**,不排队执行。
- *   - 读类工具(observe / watcher/status / device/info)在动作执行期间**照常服务**。
+ *   - 读类工具(ls / read / capture / status)在动作执行期间**照常服务**。
  *
  * 注意:动作不再自动回传"注入前后两张截图"。异步模型下"后一张"没有意义
- * (请求早就返回了),由 agent 自己用 observe 取前后帧来比对。
+ * (请求早就返回了),由 agent 自己用 capture 取前后帧来比对。
  */
-static cJSON *tool_act(const cJSON *args)
+static io_tool_out_t tool_input(const cJSON *args)
 {
     cJSON *out = cJSON_CreateObject();
 
@@ -563,19 +667,19 @@ static cJSON *tool_act(const cJSON *args)
     if (!io_usb_link_alive()) {
         cJSON_AddBoolToObject(out, "ok", false);
         cJSON_AddStringToObject(out, "error", "usb link is not alive (host suspended or unplugged)");
-        return out;
+        return tool_out(out, true);
     }
     if (!io_hid_ready()) {
         cJSON_AddBoolToObject(out, "ok", false);
         cJSON_AddStringToObject(out, "error", "HID endpoint is busy (host is not polling it)");
-        return out;
+        return tool_out(out, true);
     }
 
     const cJSON *action = cJSON_GetObjectItem(args, "action");
     if (!cJSON_IsString(action)) {
         cJSON_AddBoolToObject(out, "ok", false);
         cJSON_AddStringToObject(out, "error", "missing action");
-        return out;
+        return tool_out(out, true);
     }
     const char *a = action->valuestring;
     const cJSON *text = cJSON_GetObjectItem(args, "text");
@@ -594,7 +698,7 @@ static cJSON *tool_act(const cJSON *args)
             cJSON_Delete(detail);
             cJSON_AddBoolToObject(out, "ok", false);
             cJSON_AddStringToObject(out, "error", "missing macro");
-            return out;
+            return tool_out(out, true);
         }
         if (strcmp(m->valuestring, "selftest") &&
             strcmp(m->valuestring, "launch_watcher") &&
@@ -603,7 +707,7 @@ static cJSON *tool_act(const cJSON *args)
             cJSON_Delete(detail);
             cJSON_AddBoolToObject(out, "ok", false);
             cJSON_AddStringToObject(out, "error", "unknown macro");
-            return out;
+            return tool_out(out, true);
         }
         job.kind = IO_JOB_KIND_MACRO;
         snprintf(job.text, sizeof(job.text), "%s", m->valuestring);
@@ -627,7 +731,7 @@ static cJSON *tool_act(const cJSON *args)
         cJSON_AddBoolToObject(out, "ok", false);
         cJSON_AddBoolToObject(out, "busy", true);
         cJSON_AddStringToObject(out, "error", "device busy (another action is running)");
-        return out;
+        return tool_out(out, true);
     }
 
     if (is_macro || long_type) {
@@ -637,7 +741,7 @@ static cJSON *tool_act(const cJSON *args)
             cJSON_Delete(detail);
             cJSON_AddBoolToObject(out, "ok", false);
             cJSON_AddStringToObject(out, "error", "job queue full");
-            return out;
+            return tool_out(out, true);
         }
         /* 槽由 worker 在动作跑完后释放 */
         cJSON_AddItemToObject(out, "action", detail);
@@ -645,10 +749,10 @@ static cJSON *tool_act(const cJSON *args)
         cJSON_AddBoolToObject(out, "accepted", true);
         cJSON_AddBoolToObject(out, "busy", true);
         cJSON_AddStringToObject(out, "note",
-                               "accepted and running in background; poll device/info "
+                               "accepted and running in background; poll status "
                                "(busy=false) then read the marker file (INJ.TXT / "
                                "CAP.TXT) to judge the outcome");
-        return out;
+        return tool_out(out, false);
     }
 
     /* ---- 短动作:同步执行 ---- */
@@ -660,78 +764,198 @@ static cJSON *tool_act(const cJSON *args)
     if (rc != ESP_OK) {
         cJSON_AddStringToObject(out, "error", esp_err_to_name(rc));
     }
-    return out;
+    return tool_out(out, rc != ESP_OK);
 }
 
 /* ------------------------------------------------------------------ */
-/* 工具:observe / watcher/status / deploy_payload                        */
+/* 工具:ls / read / capture / update                                     */
 /* ------------------------------------------------------------------ */
 
-static cJSON *tool_observe(const cJSON *args)
+/*
+ * ls —— 列共享盘。
+ *
+ * 盘是目标机可见的那张 FAT16 卷:watcher 把帧写在上面,宿主也能往上写文件。
+ * agent 要知道"盘上现在有什么、哪个最新"就得问它。
+ */
+static io_tool_out_t tool_ls(const cJSON *args)
 {
-    const cJSON *t = cJSON_GetObjectItem(args, "target");
-    const char *target = (cJSON_IsString(t) && t->valuestring[0]) ? t->valuestring : "preview";
+    (void)args;
+    cJSON *o = cJSON_CreateObject();
 
-    if (!strcmp(target, "diff")) {
-        /* 帧差清单位watcher算好(哑设备原则:设备不比对),设备只搬运 */
-        char buf[2048];
-        size_t len = 0;
-        if (io_disk_read_file("DIFF.IDX", buf, sizeof(buf) - 1, &len) != ESP_OK || len == 0) {
-            cJSON *o = cJSON_CreateObject();
-            cJSON_AddBoolToObject(o, "ok", false);
-            cJSON_AddStringToObject(o, "note", "DIFF.IDX not on the volume");
-            return o;
-        }
-        buf[len] = '\0';
-        cJSON *o = cJSON_CreateObject();
-        cJSON_AddBoolToObject(o, "ok", true);
-        cJSON_AddStringToObject(o, "file", "DIFF.IDX");
-        cJSON_AddStringToObject(o, "diff", buf);
-        return o;
+    /* 静态缓冲:httpd 是单 task,不会并发;栈上放不下。 */
+    static io_file_info_t files[IO_DIR_MAX];
+    const size_t total = io_disk_list_files(files, IO_DIR_MAX);
+
+    cJSON *arr = cJSON_CreateArray();
+    for (size_t i = 0; i < total && i < IO_DIR_MAX; i++) {
+        cJSON *e = cJSON_CreateObject();
+        cJSON_AddStringToObject(e, "name", files[i].name);
+        cJSON_AddNumberToObject(e, "size", (double)files[i].size);
+        cJSON_AddNumberToObject(e, "mtime", (double)files[i].mtime);
+        cJSON_AddBoolToObject(e, "frame", name_is_frame(files[i].name));
+        cJSON_AddItemToArray(arr, e);
     }
-
-    const char *file = "SNAP_P.JPG";
-    const char *tag = "preview";
-    if (!strcmp(target, "full")) { file = "SNAP_A.JPG"; tag = "full"; }
-    else if (!strcmp(target, "roi")) { file = "SNAP_R.JPG"; tag = "roi"; }
-    else if (strcmp(target, "preview") != 0) {
-        /*
-         * 不是预设名 -> 当作**任意 8.3 文件名**直接读根目录。
-         * 用途:读取宿主写给设备的任意文件(如槽位文件 WATCH.PS1),
-         * 也是验证 find_file/read_file 真的能"找到"而不只是"报找不到"。
-         */
-        file = target;
-        tag = "file";
+    cJSON_AddItemToObject(o, "files", arr);
+    cJSON_AddNumberToObject(o, "count", (double)total);
+    cJSON_AddBoolToObject(o, "ok", true);
+    if (total > IO_DIR_MAX) {
+        cJSON_AddStringToObject(o, "note", "listing truncated");
     }
-
-    return observe_snapshot(file, tag);
+    return tool_out(o, false);
 }
 
-static cJSON *tool_watcher_status(void)
+/*
+ * read —— 读共享盘上的某个文件。
+ *
+ * 小文件直接内联(文本块);图片走 MCP 的 image 块;太大的只给 URL。
+ */
+static io_tool_out_t tool_read(const cJSON *args)
 {
     cJSON *o = cJSON_CreateObject();
-    io_file_info_t info;
-    const bool found = io_disk_find_file("CAP.TXT", &info);
-    cJSON_AddBoolToObject(o, "running", found);
-    if (found) {
-        cJSON_AddNumberToObject(o, "cap_bytes", (double)info.size);
-        char head[128];
-        size_t n = 0;
-        if (io_disk_read_file("CAP.TXT", head, sizeof(head) - 1, &n) == ESP_OK && n) {
-            head[n] = '\0';
-            for (size_t i = 0; i < n; i++) {
-                if (head[i] == '\r' || head[i] == '\n') { head[i] = '\0'; break; }
-            }
-            cJSON_AddStringToObject(o, "cap_head", head);
-        }
-    } else {
-        cJSON_AddStringToObject(o, "note",
-                               "CAP.TXT not found -- the watcher is not running on the host");
+
+    const cJSON *n = cJSON_GetObjectItem(args, "name");
+    if (!cJSON_IsString(n) || !n->valuestring[0]) {
+        cJSON_AddBoolToObject(o, "ok", false);
+        cJSON_AddStringToObject(o, "error", "missing name");
+        return tool_out(o, true);
     }
-    return o;
+    const char *name = n->valuestring;
+
+    io_file_info_t info;
+    if (!io_disk_find_file(name, &info)) {
+        cJSON_AddBoolToObject(o, "ok", false);
+        cJSON_AddStringToObject(o, "file", name);
+        cJSON_AddStringToObject(o, "error", "no such file on the volume");
+        return tool_out(o, true);
+    }
+
+    cJSON_AddStringToObject(o, "file", info.name);
+    cJSON_AddNumberToObject(o, "size", (double)info.size);
+    cJSON_AddNumberToObject(o, "mtime", (double)info.mtime);
+
+    /* 太大就只给 URL(客户端自己去 GET /files/<name>) */
+    if (info.size > IO_FILE_MAX_INLINE) {
+        char *url = files_url(info.name);
+        cJSON_AddBoolToObject(o, "ok", true);
+        if (url) {
+            cJSON_AddStringToObject(o, "url", url);
+            free(url);
+        }
+        cJSON_AddStringToObject(o, "note", "too large to inline; fetch the url");
+        return tool_out(o, false);
+    }
+
+    static uint8_t buf[IO_FILE_BUF_MAX];
+    const size_t len = read_shared_file(info.name, buf, sizeof(buf));
+    if (len == 0) {
+        cJSON_AddBoolToObject(o, "ok", false);
+        cJSON_AddStringToObject(o, "error", "read failed (file gone or empty?)");
+        return tool_out(o, true);
+    }
+    cJSON_AddNumberToObject(o, "bytes", (double)len);
+
+    if (bytes_are_jpeg(buf, len)) {
+        char *b64 = b64_encode(buf, len);
+        if (!b64) {
+            cJSON_AddBoolToObject(o, "ok", false);
+            cJSON_AddStringToObject(o, "error", "out of memory");
+            return tool_out(o, true);
+        }
+        cJSON_AddStringToObject(o, "mime", "image/jpeg");
+        cJSON_AddStringToObject(o, "image_b64", b64);
+        free(b64);
+        io_tool_out_t out = { o, false, true, "image/jpeg" };
+        return out;
+    }
+
+    /* 文本:补 NUL 收尾,再给出去 */
+    buf[len < sizeof(buf) ? len : sizeof(buf) - 1] = '\0';
+    cJSON_AddStringToObject(o, "text", (const char *)buf);
+    cJSON_AddBoolToObject(o, "ok", true);
+    return tool_out(o, false);
 }
 
-static cJSON *tool_deploy_payload(const cJSON *args)
+/*
+ * capture —— 取最新一帧。
+ *
+ * "最新"按**最后写入时间**判:帧是目标机上的 watcher 写的,FAT16 目录项里
+ * 带时间戳,所以谁的 mtime 最大谁就是最新的那一帧。
+ */
+static io_tool_out_t tool_capture(const cJSON *args)
+{
+    (void)args;
+    cJSON *o = cJSON_CreateObject();
+
+    static io_file_info_t files[IO_DIR_MAX];
+    const size_t total = io_disk_list_files(files, IO_DIR_MAX);
+
+    int best = -1;
+    for (size_t i = 0; i < total && i < IO_DIR_MAX; i++) {
+        if (!name_is_frame(files[i].name)) {
+            continue;
+        }
+        if (best < 0 || files[i].mtime > files[best].mtime) {
+            best = (int)i;
+        }
+    }
+    if (best < 0) {
+        cJSON_AddBoolToObject(o, "ok", false);
+        cJSON_AddStringToObject(o, "error",
+                               "no frame on the volume (is the watcher running on the target?)");
+        return tool_out(o, true);
+    }
+
+    const io_file_info_t *f = &files[best];
+    cJSON_AddStringToObject(o, "file", f->name);
+    cJSON_AddNumberToObject(o, "size", (double)f->size);
+    cJSON_AddNumberToObject(o, "mtime", (double)f->mtime);
+
+    if (f->size > IO_FILE_MAX_INLINE) {
+        char *url = files_url(f->name);
+        cJSON_AddBoolToObject(o, "ok", true);
+        if (url) {
+            cJSON_AddStringToObject(o, "url", url);
+            free(url);
+        }
+        cJSON_AddStringToObject(o, "note", "frame too large to inline; fetch the url");
+        return tool_out(o, false);
+    }
+
+    static uint8_t buf[IO_FILE_BUF_MAX];
+    const size_t len = read_shared_file(f->name, buf, sizeof(buf));
+    if (len == 0) {
+        cJSON_AddBoolToObject(o, "ok", false);
+        cJSON_AddStringToObject(o, "error", "read failed (frame gone?)");
+        return tool_out(o, true);
+    }
+    cJSON_AddNumberToObject(o, "bytes", (double)len);
+
+    if (bytes_are_jpeg(buf, len)) {
+        char *b64 = b64_encode(buf, len);
+        if (!b64) {
+            cJSON_AddBoolToObject(o, "ok", false);
+            cJSON_AddStringToObject(o, "error", "out of memory");
+            return tool_out(o, true);
+        }
+        cJSON_AddStringToObject(o, "mime", "image/jpeg");
+        cJSON_AddStringToObject(o, "image_b64", b64);
+        free(b64);
+        io_tool_out_t out = { o, false, true, "image/jpeg" };
+        return out;
+    }
+
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddStringToObject(o, "note", "latest frame is not a JPEG; read it as bytes");
+    return tool_out(o, false);
+}
+
+/*
+ * update —— 更新一个 flash 槽位。
+ *
+ * 写的是 **flash**(A/B 快照),**下次开机**才生效:RAM disk 里的那份是开机
+ * 铺开的副本,运行期改它等于和目标机抢同一批簇(见"真源/副本契约")。
+ */
+static io_tool_out_t tool_update(const cJSON *args)
 {
     cJSON *o = cJSON_CreateObject();
 
@@ -743,21 +967,21 @@ static cJSON *tool_deploy_payload(const cJSON *args)
     if (!cJSON_IsString(text) && !cJSON_IsString(b64)) {
         cJSON_AddBoolToObject(o, "ok", false);
         cJSON_AddStringToObject(o, "error", "need either 'text' or 'base64'");
-        return o;
+        return tool_out(o, true);
     }
 
     const io_slot_desc_t *sd = io_disk_slot_at(slot_index);
     if (!sd || sd->kind != IO_SLOT_KIND_SLOT) {
         cJSON_AddBoolToObject(o, "ok", false);
         cJSON_AddStringToObject(o, "error", "no such slot");
-        return o;
+        return tool_out(o, true);
     }
 
     uint8_t *buf = (uint8_t *)heap_caps_malloc(sd->capacity, MALLOC_CAP_SPIRAM);
     if (!buf) {
         cJSON_AddBoolToObject(o, "ok", false);
         cJSON_AddStringToObject(o, "error", "out of memory");
-        return o;
+        return tool_out(o, true);
     }
     size_t len = 0;
     if (cJSON_IsString(text)) {
@@ -770,7 +994,7 @@ static cJSON *tool_deploy_payload(const cJSON *args)
             heap_caps_free(buf);
             cJSON_AddBoolToObject(o, "ok", false);
             cJSON_AddStringToObject(o, "error", "bad base64");
-            return o;
+            return tool_out(o, true);
         }
         len = (size_t)n;
     }
@@ -782,7 +1006,7 @@ static cJSON *tool_deploy_payload(const cJSON *args)
         cJSON_AddBoolToObject(o, "ok", false);
         cJSON_AddBoolToObject(o, "busy", true);
         cJSON_AddStringToObject(o, "error", "device busy (another action is running)");
-        return o;
+        return tool_out(o, true);
     }
     const esp_err_t rc = io_payload_store(slot_index, buf, len);
     op_slot_release();
@@ -793,12 +1017,12 @@ static cJSON *tool_deploy_payload(const cJSON *args)
     cJSON_AddNumberToObject(o, "len", (double)len);
     if (rc != ESP_OK) {
         cJSON_AddStringToObject(o, "error", esp_err_to_name(rc));
-        return o;
+        return tool_out(o, true);
     }
     cJSON_AddNumberToObject(o, "payload_seq", (double)io_payload_active_seq());
     cJSON_AddStringToObject(o, "note",
                            "stored in flash only -- the RAM disk copy is written at next boot");
-    return o;
+    return tool_out(o, false);
 }
 
 /* ------------------------------------------------------------------ */
@@ -835,11 +1059,15 @@ static cJSON *tool_schema_num(const char *desc)
  * cJSON_Delete(props)**。踩过这个坑:调用方删了一次、schema 又删一次 =>
  * 双重释放 => 堆损坏 => 设备在 tools/list 时崩溃重启。
  */
-static void add_tool(cJSON *arr, const char *name, const char *desc, cJSON *props,
-                     const char *required)
+static cJSON *add_tool(cJSON *arr, const char *name, const char *title, const char *desc,
+                       cJSON *props, const char *required)
 {
     cJSON *t = cJSON_CreateObject();
     cJSON_AddStringToObject(t, "name", name);
+    if (title) {
+        /* title 是给人看的名字(规范里 name 是标识、title 是显示名) */
+        cJSON_AddStringToObject(t, "title", title);
+    }
     cJSON_AddStringToObject(t, "description", desc);
     cJSON *schema = cJSON_CreateObject();
     cJSON_AddStringToObject(schema, "type", "object");
@@ -853,17 +1081,78 @@ static void add_tool(cJSON *arr, const char *name, const char *desc, cJSON *prop
     }
     cJSON_AddItemToObject(t, "inputSchema", schema);
     cJSON_AddItemToArray(arr, t);
+    return t;
 }
 
+/*
+ * 给工具挂 outputSchema。
+ *
+ * 规范:提供了 outputSchema 的话,服务端**必须**返回符合该 schema 的
+ * structuredContent,客户端**应该**照它校验。我们每个工具的结果都带 ok,
+ * 所以统一声明 object + 必含 ok。
+ */
+static void add_output_schema(cJSON *tool)
+{
+    cJSON *schema = cJSON_CreateObject();
+    cJSON_AddStringToObject(schema, "type", "object");
+    cJSON *props = cJSON_CreateObject();
+    cJSON *ok = cJSON_CreateObject();
+    cJSON_AddStringToObject(ok, "type", "boolean");
+    cJSON_AddItemToObject(props, "ok", ok);
+    cJSON_AddItemToObject(schema, "properties", props);
+    cJSON *req = cJSON_CreateArray();
+    cJSON_AddItemToArray(req, cJSON_CreateString("ok"));
+    cJSON_AddItemToObject(schema, "required", req);
+    cJSON_AddItemToObject(tool, "outputSchema", schema);
+}
+
+/*
+ * 工具清单。
+ *
+ * 命名规则:**全部是动词,全小写单词,零分隔符**。
+ * 之前混着斜杠(device/info)、单词(act)、下划线(deploy_payload)三套写法,
+ * 同一个 agent 看到要自己猜风格 —— 现在统一成"一个动词 = 一件事"。
+ */
 static cJSON *build_tools_list(void)
 {
     cJSON *tools = cJSON_CreateArray();
 
     {
         cJSON *p = cJSON_CreateObject();
-        add_tool(tools, "device/info",
-                 "Device identity, link state, slot table and payload sequence.",
-                 p, NULL);
+        cJSON *t = add_tool(tools, "status", "Device status",
+                            "Identity, USB/HID link state, LED status code, the flash slot "
+                            "table, and whether the watcher is running on the target machine.",
+                            p, NULL);
+        add_output_schema(t);
+    }
+    {
+        cJSON *p = cJSON_CreateObject();
+        cJSON *t = add_tool(tools, "ls", "List the shared disk",
+                            "List the files on the dongle's shared disk (the same volume the "
+                            "target machine sees): name, size, last-write time, and whether it "
+                            "is a frame file.",
+                            p, NULL);
+        add_output_schema(t);
+    }
+    {
+        cJSON *p = cJSON_CreateObject();
+        cJSON_AddItemToObject(p, "name", tool_schema_str(
+            "8.3 file name on the shared disk, e.g. CAP.TXT, INJ.TXT, DIFF.IDX, SNAP_P.JPG"));
+        cJSON *t = add_tool(tools, "read", "Read a file from the shared disk",
+                            "Read one file from the shared disk. Text comes back inline, images "
+                            "come back as an MCP image block, and anything too large is "
+                            "returned as a URL to GET /files/<name>.",
+                            p, "name");
+        add_output_schema(t);
+    }
+    {
+        cJSON *p = cJSON_CreateObject();
+        cJSON *t = add_tool(tools, "capture", "Capture the latest frame",
+                            "Return the newest frame on the shared disk (picked by last-write "
+                            "time) as an MCP image block, with its file name, size and "
+                            "timestamp. This is the 'see that machine's screen' call.",
+                            p, NULL);
+        add_output_schema(t);
     }
     {
         cJSON *p = cJSON_CreateObject();
@@ -881,41 +1170,28 @@ static cJSON *build_tools_list(void)
         cJSON_AddItemToObject(p, "per_char_ms", tool_schema_num(
             "per-character hold time in action=type, default 60 (IME needs >= 60 ms "
             "or the input comes out garbled)"));
-        add_tool(tools, "act",
-                 "Inject ONE action on the host. Single execution, never retried. "
-                 "Long actions (macro / long text) are accepted and run in background: "
-                 "the reply is {\"accepted\":true,\"busy\":true} and the outcome is "
-                 "judged by the marker file (INJ.TXT / CAP.TXT) -- poll device/info "
-                 "until busy=false, then observe the marker. Short actions run inline. "
-                 "If another action is already running the reply is {\"busy\":true} "
-                 "(the device is a singleton; it never queues actions).",
-                 p, "action");
-    }
-    {
-        cJSON *p = cJSON_CreateObject();
-        cJSON_AddItemToObject(p, "target", tool_schema_str(
-            "preview | full | roi | diff, or any 8.3 filename on the volume "
-            "(e.g. INJ.TXT, CAP.TXT) to read that file back"));
-        add_tool(tools, "observe",
-                 "Read a snapshot file from the host's RAM disk and return a URL for "
-                 "the raw bytes. The device never decodes or compares images.",
-                 p, NULL);
-    }
-    {
-        cJSON *p = cJSON_CreateObject();
-        add_tool(tools, "watcher/status",
-                 "Whether the watcher on the host is running (CAP.TXT present).",
-                 p, NULL);
+        cJSON *t = add_tool(tools, "input", "Send one input action to the target machine",
+                            "Inject ONE action on the target machine. Single execution, never "
+                            "retried. Long actions (macro / long text) are accepted and run in "
+                            "background: the reply is {\"accepted\":true,\"busy\":true} and the "
+                            "outcome is judged by the marker file (INJ.TXT / CAP.TXT) -- poll "
+                            "status until busy=false, then read the marker with 'read'. Short "
+                            "actions run inline. If another action is already running the reply "
+                            "is {\"busy\":true} (the device is a singleton; it never queues "
+                            "actions).",
+                            p, "action");
+        add_output_schema(t);
     }
     {
         cJSON *p = cJSON_CreateObject();
         cJSON_AddItemToObject(p, "slot", tool_schema_num("slot index, 0=WATCH.PS1 1=AGENT.SH 2=AGENT.EXE"));
         cJSON_AddItemToObject(p, "text", tool_schema_str("plain text payload"));
         cJSON_AddItemToObject(p, "base64", tool_schema_str("base64 payload (alternative to text)"));
-        add_tool(tools, "deploy_payload",
-                 "Store a payload into the flash A/B bank. Takes effect at the next boot "
-                 "(the RAM disk copy is written by the boot-time overlay).",
-                 p, "slot");
+        cJSON *t = add_tool(tools, "update", "Update a flash slot",
+                            "Store a payload into the flash A/B bank. It takes effect at the "
+                            "next boot (the RAM disk copy is written by the boot-time overlay).",
+                            p, "slot");
+        add_output_schema(t);
     }
     return tools;
 }
@@ -1103,7 +1379,7 @@ static void http_drain_body(httpd_req_t *req)
     }
 }
 
-/* Host / Origin 检查(GET 端点也要 —— /blob 装的是桌面帧) */
+/* Host / Origin 检查(GET 端点也要 —— /files 装的是桌面帧) */
 static bool http_guard_host_origin(httpd_req_t *req)
 {
     /*
@@ -1168,12 +1444,27 @@ static bool http_guard_request(httpd_req_t *req)
 /* JSON-RPC 分发                                                        */
 /* ------------------------------------------------------------------ */
 
+/*
+ * 分发一个 JSON-RPC 请求,返回**完整的应答信封**(成功是 result,失败是 error)。
+ *
+ * ★ 为什么要"完整信封"而不是"结果体"★
+ *   JSON-RPC 2.0 里 error 和 result 是**同级**的两种应答:
+ *     {"jsonrpc":"2.0","id":1,"result":{...}}
+ *     {"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"..."}}
+ *   之前这个函数对普通调用返回"结果体",对未知工具返回"完整错误信封",
+ *   调用方不知道该用哪种,一律包了一层 rpc_ok() ⇒ 错误被塞进了 result 里:
+ *     {"result":{"jsonrpc":"2.0","id":1,"error":{...}}}
+ *   客户端按规范只认顶层的 error ⇒ **未知工具看起来像"调用成功了"**。
+ *   现在统一:这个函数只产出完整信封,调用方原样发出。
+ *
+ * @return 完整应答信封(调用方负责 cJSON_Delete);返回 NULL 表示"无应答"
+ */
 static cJSON *dispatch_rpc(const cJSON *req)
 {
     const cJSON *method = cJSON_GetObjectItem(req, "method");
     const cJSON *id = cJSON_GetObjectItem(req, "id");
     if (!cJSON_IsString(method)) {
-        return NULL;
+        return rpc_error(id, -32600, "Invalid Request: missing method");
     }
     const char *m = method->valuestring;
 
@@ -1213,59 +1504,43 @@ static cJSON *dispatch_rpc(const cJSON *req)
         const cJSON *tname = cJSON_GetObjectItem(params, "name");
         const cJSON *targs = cJSON_GetObjectItem(params, "arguments");
         if (!cJSON_IsString(tname)) {
-            return NULL;
+            return rpc_error(id, -32602, "Invalid params: missing tool name");
         }
         if (!cJSON_IsObject(targs)) {
             targs = NULL;
         }
         const char *n = tname->valuestring;
-        cJSON *payload = NULL;
-        bool err = false;
-        if (!strcmp(n, "device/info")) {
-            payload = tool_device_info();
-        } else if (!strcmp(n, "act")) {
-            payload = tool_act(targs);
-            err = !cJSON_IsTrue(cJSON_GetObjectItem(payload, "ok"));
-        } else if (!strcmp(n, "observe")) {
-            payload = tool_observe(targs);
-        } else if (!strcmp(n, "watcher/status")) {
-            payload = tool_watcher_status();
-        } else if (!strcmp(n, "deploy_payload")) {
-            payload = tool_deploy_payload(targs);
-            err = !cJSON_IsTrue(cJSON_GetObjectItem(payload, "ok"));
+
+        io_tool_out_t out;
+        if (!strcmp(n, "status")) {
+            out = tool_status();
+        } else if (!strcmp(n, "ls")) {
+            out = tool_ls(targs);
+        } else if (!strcmp(n, "read")) {
+            out = tool_read(targs);
+        } else if (!strcmp(n, "capture")) {
+            out = tool_capture(targs);
+        } else if (!strcmp(n, "input")) {
+            out = tool_input(targs);
+        } else if (!strcmp(n, "update")) {
+            out = tool_update(targs);
         } else {
+            /*
+             * 未知工具是**协议错误**(规范:未知工具用 JSON-RPC error,
+             * 工具执行错误才用 isError)⇒ 回 -32602 Invalid params。
+             * 注意:这里返回的是**完整错误信封**,不能被包进 result。
+             */
             char msg[128];
-            snprintf(msg, sizeof(msg), "unknown tool: %s", n);
-            result = cJSON_CreateObject();
-            cJSON *content = cJSON_CreateArray();
-            cJSON *item = cJSON_CreateObject();
-            cJSON_AddStringToObject(item, "type", "text");
-            cJSON_AddStringToObject(item, "text", msg);
-            cJSON_AddItemToArray(content, item);
-            cJSON_AddItemToObject(result, "content", content);
-            cJSON_AddBoolToObject(result, "isError", true);
+            snprintf(msg, sizeof(msg), "Unknown tool: %s", n);
+            return rpc_error(id, -32602, msg);
         }
-        if (payload) {
-            char *txt = cJSON_PrintUnformatted(payload);
-            result = cJSON_CreateObject();
-            cJSON *content = cJSON_CreateArray();
-            cJSON *item = cJSON_CreateObject();
-            cJSON_AddStringToObject(item, "type", "text");
-            cJSON_AddStringToObject(item, "text", txt ? txt : "{}");
-            cJSON_AddItemToArray(content, item);
-            cJSON_AddItemToObject(result, "content", content);
-            if (err) {
-                cJSON_AddBoolToObject(result, "isError", true);
-            }
-            cJSON_Delete(payload);
-            free(txt);
-        }
+        result = tool_result(&out);
+        cJSON_Delete(out.payload);
     } else {
-        return NULL;   /* 未知方法 -> 交给调用方报 method not found */
+        return rpc_error(id, -32601, "method not found");
     }
 
-    (void)id;
-    return result;
+    return rpc_ok(id, result);
 }
 
 static cJSON *rpc_error(const cJSON *id, int code, const char *msg)
@@ -1376,17 +1651,13 @@ static esp_err_t http_mcp_post(httpd_req_t *req)
         const cJSON *one = NULL;
         cJSON_ArrayForEach(one, req_json) {
             const cJSON *method = cJSON_GetObjectItem(one, "method");
-            const cJSON *id = cJSON_GetObjectItem(one, "id");
             if (cJSON_IsString(method) && !strcmp(method->valuestring, "notifications/initialized")) {
                 continue;   /* 通知,无响应 */
             }
             cJSON *res = dispatch_rpc(one);
             if (res) {
-                cJSON_AddItemToObject(res, "jsonrpc", cJSON_CreateString("2.0"));
+                /* dispatch_rpc 已经给出完整信封(result 或 error),原样放进数组 */
                 cJSON_AddItemToArray(arr, res);
-            } else {
-                cJSON *err = rpc_error(id, -32601, "method not found");
-                cJSON_AddItemToArray(arr, err);
             }
         }
         /* 全是通知 ⇒ 按规范回 202 Accepted + 空 body(不是空数组) */
@@ -1401,7 +1672,6 @@ static esp_err_t http_mcp_post(httpd_req_t *req)
         cJSON_Delete(arr);
     } else {
         const cJSON *method = cJSON_GetObjectItem(req_json, "method");
-        const cJSON *id = cJSON_GetObjectItem(req_json, "id");
         cJSON *res = NULL;
         if (cJSON_IsString(method) && !strcmp(method->valuestring, "notifications/initialized")) {
             /*
@@ -1416,13 +1686,9 @@ static esp_err_t http_mcp_post(httpd_req_t *req)
         }
         res = dispatch_rpc(req_json);
         if (res) {
-            cJSON *out = rpc_ok(id, res);
-            resp = cJSON_PrintUnformatted(out);
-            cJSON_Delete(out);
-        } else {
-            cJSON *out = rpc_error(id, -32601, "method not found");
-            resp = cJSON_PrintUnformatted(out);
-            cJSON_Delete(out);
+            /* 完整信封:成功的里面是 result,失败的里面是 error(顶层) */
+            resp = cJSON_PrintUnformatted(res);
+            cJSON_Delete(res);
         }
     }
     cJSON_Delete(req_json);
@@ -1438,41 +1704,66 @@ static esp_err_t http_mcp_post(httpd_req_t *req)
     return ESP_OK;
 }
 
-static esp_err_t http_blob_get(httpd_req_t *req)
+/*
+ * GET /mcp -- 规范要求:MCP endpoint 要么支持 GET 开 SSE 流,要么回 405。
+ * 我们没有服务器主动推送(SSE)的能力,所以明确回 405,让客户端知道
+ * "这个 server 不支持 server->client 的流",而不是收到一个莫名其妙的 404。
+ */
+static esp_err_t http_mcp_get(httpd_req_t *req)
 {
-    /* /blob 装的是目标机桌面帧,一样要防 DNS rebinding */
+    if (!http_guard_host_origin(req)) {
+        return ESP_FAIL;
+    }
+    httpd_resp_set_status(req, "405 Method Not Allowed");
+    httpd_resp_set_hdr(req, "Allow", "POST");
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_sendstr(req, "this server does not offer an SSE stream; use POST\n");
+    return ESP_OK;
+}
+
+/*
+ * GET /files/<name> -- 共享盘上某个文件的**原始字节**。
+ *
+ * 这是 MCP 之外的旁路:大文件(全分辨率帧约 300 KB)没法 base64 内联进
+ * 工具结果,就指到这里;不想配 MCP 客户端的工具也能直接取。
+ * 以前这条路叫 /blob/b0..b3,那是把"内部缓存槽位"暴露成了对外契约 ——
+ * 现在按**文件名**取,语义直白,而且不用先 read 再取。
+ */
+static esp_err_t http_files_get(httpd_req_t *req)
+{
+    /* 共享盘上装的是目标机桌面帧,一样要防 DNS rebinding */
     if (!http_guard_host_origin(req)) {
         return ESP_FAIL;
     }
 
-    const char *tail = req->uri + strlen("/blob/");
+    const char *tail = req->uri + strlen("/files/");
     if (!*tail) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad blob id");
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing file name");
         return ESP_FAIL;
     }
-    /* URL 形式是 "/blob/b<n>" —— 跳过可选的 'b' 前缀再按十进制解析。
-       (踩过:URL 生成用 "b0"、解析按纯数字,于是每个 blob 请求都 400。) */
-    if (*tail == 'b' || *tail == 'B') {
-        tail++;
-    }
-    char *end = NULL;
-    const long idx = strtol(tail, &end, 10);
-    if (end == tail || idx < 0 || idx >= IO_BLOB_SLOTS) {
-        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "bad blob id");
+
+    io_file_info_t info;
+    if (!io_disk_find_file(tail, &info)) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no such file on the volume");
         return ESP_FAIL;
     }
-    if (!s_blob_mem || s_blob[idx].len == 0) {
-        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "blob expired");
+
+    static uint8_t buf[IO_FILE_BUF_MAX];
+    const size_t len = read_shared_file(info.name, buf, sizeof(buf));
+    if (len == 0) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "read failed");
         return ESP_FAIL;
     }
-    const char *ctype = "image/jpeg";
-    if (!strcmp(s_blob[idx].tag, "diff")) {
+
+    const char *ctype = "application/octet-stream";
+    if (bytes_are_jpeg(buf, len)) {
+        ctype = "image/jpeg";
+    } else if (!strcmp(info.name, "DIFF.IDX")) {
         ctype = "application/json";
     }
     httpd_resp_set_type(req, ctype);
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    httpd_resp_send(req, (const char *)s_blob_mem + (size_t)idx * IO_BLOB_MAX,
-                    s_blob[idx].len);
+    httpd_resp_send(req, (const char *)buf, len);
     return ESP_OK;
 }
 
@@ -1505,15 +1796,6 @@ static esp_err_t http_ping_get(httpd_req_t *req)
 
 esp_err_t io_mcp_start(void)
 {
-    if (!s_blob_mem) {
-        s_blob_mem = (uint8_t *)heap_caps_malloc((size_t)IO_BLOB_SLOTS * IO_BLOB_MAX,
-                                                 MALLOC_CAP_SPIRAM);
-        if (!s_blob_mem) {
-            ESP_LOGE(TAG, "blob cache alloc failed");
-            return ESP_ERR_NO_MEM;
-        }
-    }
-
     /* 单例槽 + worker task(长动作移出 httpd task,见文件头注释) */
     s_op_sem = xSemaphoreCreateBinary();
     if (!s_op_sem) {
@@ -1536,9 +1818,25 @@ esp_err_t io_mcp_start(void)
     cfg.max_uri_handlers = 6;
     cfg.lru_purge_enable = true;
     /*
+     * uri_match_fn:打开**通配 URI 模板**。
+     *
+     * 之前这里没设,于是 "/files/" + 星号 这种模板**根本不会展开** —— 默认的
+     * 匹配器是精确比较(strncmp),只有完全相等的 URI 才命中,所以
+     * GET /files/WATCH.PS1 一直 404 "Nothing matches the given URI"。
+     * (之前那版代码的注释写"实测 IDF 5.5 的 httpd 对通配模板匹配不上",
+     *  诊断反了:不是通配不支持,而是**没把匹配器切过去**。
+     *  IDF 把 httpd_uri_match_wildcard() 作为**公开 API** 提供在
+     *  esp_http_server.h 里,设进去就行。)
+     *
+     * 没有通配器的语义影响:模板里不带 '*'/'?' 时,这个匹配器的行为与
+     * 精确比较一致(源码 httpd_uri.c: exact_match_chars == len 分支),
+     * 所以 "/mcp"、"/ping" 这几条的匹配结果不变。
+     */
+    cfg.uri_match_fn = httpd_uri_match_wildcard;
+    /*
      * stack_size:IDF 默认 4096。httpd 是**单 task**,handler 的调用链
-     * (httpd 自己的帧 + 我们的加固 + cJSON 解析/打印 + observe 的读盘)
-     * 全在这一个栈上。observe 读一个"已存在"的文件时崩过
+     * (httpd 自己的帧 + 我们的加固 + cJSON 解析/打印 + 读盘)
+     * 全在这一个栈上。读一个"已存在"的文件时崩过
      * (Guru Meditation / LoadProhibited,回溯被冲垮 ⇒ 栈被写坏),
      * 给到 8192 留出余量。
      */
@@ -1568,17 +1866,24 @@ esp_err_t io_mcp_start(void)
         .handler = http_mcp_post,
         .user_ctx = NULL,
     };
+    /* GET /mcp:规范要求要么开 SSE 流,要么回 405。我们不开流,明确回 405。 */
+    static const httpd_uri_t uri_mcp_get = {
+        .uri = "/mcp",
+        .method = HTTP_GET,
+        .handler = http_mcp_get,
+        .user_ctx = NULL,
+    };
     /*
-     * blob 端点用**精确路径**而不是通配(模板是 "/blob/" 加一个星号):
-     * 实测 IDF 5.5 的 httpd 对那个通配模板没有匹配上 "/blob/b0"
-     * (返回 404 "Nothing matches the given URI"),而 "/ping" 正常。
-     * 4 个固定槽位 -> 注册 4 条精确 URI,行为确定。
+     * /files/ 下的路径用**通配模板**匹配:共享盘上文件名是 8.3 短名
+     * (SNAP_P.JPG 这种),数量不定(宿主随时能写新的),没法像以前那样给每个
+     * 名字注册一条 URI —— 以前那 4 条 "/blob/bN" 是把**内部缓存槽位**暴露
+     * 成了对外契约,现在按文件名取,通配一条就够。
      */
-    static const httpd_uri_t uri_blob[IO_BLOB_SLOTS] = {
-        { .uri = "/blob/b0", .method = HTTP_GET, .handler = http_blob_get, .user_ctx = NULL },
-        { .uri = "/blob/b1", .method = HTTP_GET, .handler = http_blob_get, .user_ctx = NULL },
-        { .uri = "/blob/b2", .method = HTTP_GET, .handler = http_blob_get, .user_ctx = NULL },
-        { .uri = "/blob/b3", .method = HTTP_GET, .handler = http_blob_get, .user_ctx = NULL },
+    static const httpd_uri_t uri_files = {
+        .uri = "/files/*",
+        .method = HTTP_GET,
+        .handler = http_files_get,
+        .user_ctx = NULL,
     };
     static const httpd_uri_t uri_ping = {
         .uri = "/ping",
@@ -1587,14 +1892,14 @@ esp_err_t io_mcp_start(void)
         .user_ctx = NULL,
     };
     httpd_register_uri_handler(server, &uri_mcp);
-    for (int i = 0; i < IO_BLOB_SLOTS; i++) {
-        const esp_err_t rc = httpd_register_uri_handler(server, &uri_blob[i]);
-        ESP_LOGI(TAG, "blob endpoint /blob/b%d: %s", i, esp_err_to_name(rc));
-    }
+    const esp_err_t g = httpd_register_uri_handler(server, &uri_mcp_get);
+    ESP_LOGI(TAG, "GET /mcp (405 by design): %s", esp_err_to_name(g));
+    const esp_err_t f = httpd_register_uri_handler(server, &uri_files);
+    ESP_LOGI(TAG, "files endpoint /files/*: %s", esp_err_to_name(f));
     const esp_err_t prc = httpd_register_uri_handler(server, &uri_ping);
     ESP_LOGI(TAG, "ping endpoint /ping: %s", esp_err_to_name(prc));
 
-    ESP_LOGI(TAG, "MCP server on port %d (POST /mcp, GET /blob/*), protocol %s",
+    ESP_LOGI(TAG, "MCP server on port %d (POST /mcp, GET /files/*, GET /ping), protocol %s",
              IO_MCP_PORT, IO_MCP_PROTO);
     return ESP_OK;
 }

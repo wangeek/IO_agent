@@ -444,7 +444,7 @@ bool io_payload_active_matches(uint32_t slot_index, uint32_t len, uint32_t crc32
 /*
  * 信箱:宿主往 RAM disk 的 PAYLOAD.BIN 里写 [64 字节头][payload],设备轮询到
  * 变化就落 flash。这条通道是"还没上 WiFi/MCP 时"也能下发的路径,也是
- * deploy_payload 在 M5 落地前的等价物(MCP 版本直接调 io_payload_store)。
+ * update 在 M5 落地前的等价物(MCP 版本直接调 io_payload_store)。
  *
  * 宿主必须**按信箱容量原样大小**覆写(不够就补零):这样簇链不变,设备才知道
  * payload 在卷里的位置。文件内容超容量 = 拒绝,设备不替宿主改 FAT。

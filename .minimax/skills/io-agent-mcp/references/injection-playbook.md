@@ -5,11 +5,11 @@ injection.
 
 ## Ground rules
 
-0. **Every `act` call types into a live machine — including `macro=selftest`
+0. **Every `input` call types into a live machine — including `macro=selftest`
    and `macro=ime_toggle`.** The self-test is *not* a read-only probe: it opens
    a Run box on the target and executes a command there. "It's only a probe" is
    not a reason to send one without authorisation. If authorisation is
-   missing, send no `act` at all and report the read-only options instead.
+   missing, send no `input` at all and report the read-only options instead.
 1. **One action per call, and the device never retries.** If you are unsure it
    landed, ask the user before sending it again. Repeated keystrokes into a
    live machine are how accounts get locked out.
@@ -20,7 +20,7 @@ injection.
 3. **The device cannot see the target's screen.** It only knows whether bytes
    went out and whether a marker file came back. Judge the outcome by those
    files, never by "the call returned ok".
-4. **Do not send `act` while `device/info.busy` is true.** The device would
+4. **Do not send `input` while `status.busy` is true.** The device would
    answer `busy` and drop the request; it does not queue.
 
 ## The exact sequence the device performs
@@ -74,45 +74,44 @@ Consequences, all measured:
 ### 1. Probe
 
 ```bash
-python scripts/mcp_call.py --endpoint $EP --tool act --args '{"action":"macro","macro":"selftest"}'
+python scripts/mcp_call.py --endpoint $EP --tool input --args '{"action":"macro","macro":"selftest"}'
 ```
 
 This is a long action: the reply is `{"ok":true,"accepted":true,"busy":true}`.
 Wait for it to finish:
 
 ```bash
-python scripts/mcp_call.py --endpoint $EP --info        # wait until busy == false
-python scripts/mcp_call.py --endpoint $EP --tool observe --args '{"target":"INJ.TXT"}'
+python scripts/mcp_call.py --endpoint $EP --status      # wait until busy == false
+python scripts/mcp_call.py --endpoint $EP --tool read --args '{"name":"INJ.TXT"}'
 ```
 
-- `observe` returns `ok:true` with a URL ⇒ `INJ.TXT` exists ⇒ the mode was
-  English. **Proceed.**
-- `observe` returns `ok:false, note:"file not on the volume"` ⇒ the mode was
-  Chinese (or the injection did not reach the machine at all).
+- `read` returns `ok:true` ⇒ `INJ.TXT` exists ⇒ the mode was English.
+  **Proceed.**
+- `read` returns `isError:true` / `ok:false` ⇒ the mode was Chinese (or the
+  injection did not reach the machine at all).
 
 ### 2. If the probe failed, switch the mode once — then probe again
 
 ```bash
-python scripts/mcp_call.py --endpoint $EP --tool act --args '{"action":"macro","macro":"ime_toggle"}'
+python scripts/mcp_call.py --endpoint $EP --tool input --args '{"action":"macro","macro":"ime_toggle"}'
 ```
 
 `ime_toggle` only toggles the input mode; it types nothing, so it is safe even
 on a locked screen. **Then repeat step 1.** If the second probe also fails, the
 problem is not the IME — the injection is not reaching the machine. Check
-`device/info`: `usb.link_alive` must be true and `hid.endpoint_ready` must be
-true.
+`status`: `usb.link_alive` must be true and `hid.endpoint_ready` must be true.
 
 ### 3. Do the real thing
 
 ```bash
-python scripts/mcp_call.py --endpoint $EP --tool act \
+python scripts/mcp_call.py --endpoint $EP --tool input \
   --args '{"action":"macro","macro":"launch_watcher"}'
 ```
 
 If the probe had **failed** (Chinese mode), add the Shift step:
 
 ```bash
-python scripts/mcp_call.py --endpoint $EP --tool act \
+python scripts/mcp_call.py --endpoint $EP --tool input \
   --args '{"action":"macro","macro":"launch_watcher","ime":"toggle"}'
 ```
 
@@ -123,11 +122,11 @@ mode was Chinese.
 ### 4. Verify
 
 ```bash
-python scripts/mcp_call.py --endpoint $EP --info        # busy == false
-python scripts/mcp_call.py --endpoint $EP --tool watcher/status
+python scripts/mcp_call.py --endpoint $EP --status      # busy == false
+python scripts/mcp_call.py --endpoint $EP --tool ls
 ```
 
-`watcher/status` reports `running:true` when `CAP.TXT` is on the volume. The
+`status` reports `watcher.running:true` when `CAP.TXT` is on the volume. The
 watcher writes `CAP.TXT` once when it starts, so it can be stale after the
 dongle rebooted — a `running:false` right after a reboot does not prove the
 watcher died.
@@ -140,7 +139,7 @@ select anything.
 
 - ≤ 16 characters: runs inline, the result says whether it was emitted.
 - \> 16 characters: runs in the background (`accepted:true, busy:true`); poll
-  `device/info` for `busy:false`.
+  `status` for `busy:false`.
 - The text goes through the target's IME. **ASCII text typed in Chinese mode
   comes out as garbage** — that is what the probe is for. If you must type
   ASCII and cannot probe, there is no reliable shortcut.
@@ -171,6 +170,6 @@ actions: one at a time, and never while `busy`.
   hits a live machine.
 - Do not inject into a machine the user did not authorise, and do not infer
   authorisation from "it is my other PC".
-- Do not assume the watcher is running because `watcher/status` says
-  `running:false` right after a dongle reboot — the RAM disk is rebuilt on
+- Do not assume the watcher is running because `status.watcher.running` says
+  `false` right after a dongle reboot — the RAM disk is rebuilt on
   every boot.

@@ -9,13 +9,13 @@ mcp_probe.py -- 对设备做裸 HTTP 构造访问(不依赖任何 MCP 客户端�
 
 用法:
     python tools/mcp_probe.py 172.17.21.225
-    python tools/mcp_probe.py 172.17.21.225 device/info
-    python tools/mcp_probe.py 172.17.21.225 observe '{"target":"preview"}'
+    python tools/mcp_probe.py 172.17.21.225 status
+    python tools/mcp_probe.py 172.17.21.225 read '{"name":"AGENT.SH"}'
 
 注意:
   * PowerShell 里直接 curl.exe -d '{...}' 会把 JSON 的双引号吃掉(实测报
     "invalid JSON"),所以这里用 urllib 从 Python 发,或用 --data-binary @file。
-  * 默认只跑**只读**工具。act 是会往目标机注入按键的动作,必须显式点名。
+  * 默认只跑**只读**工具。input 是会往目标机注入按键的动作,必须显式点名。
 """
 
 import json
@@ -24,7 +24,7 @@ import sys
 import urllib.error
 import urllib.request
 
-# The act tool now runs a full injection sequence (win+M / win+R / IME force /
+# The input tool now runs a full injection sequence (win+M / win+R / IME force /
 # ~110 chars of typing at 60 ms each / enter / marker poll), which takes ~10 s.
 # The HTTP client must outlast that or the probe reports a spurious failure.
 TIMEOUT = 60
@@ -61,9 +61,21 @@ def rpc(url, method, params=None, rpc_id=1):
 
 
 def call_tool(url, name, args=None):
+    """Call one tool and return its structured payload.
+
+    The device now answers with `structuredContent` (the machine-readable
+    result) plus a text block that is a copy of the same JSON. Prefer
+    structuredContent: it is the contractual field, and the text block drops
+    the base64 image body.
+    """
     status, raw = rpc(url, "tools/call", {"name": name, "arguments": args or {}})
     obj = json.loads(raw)
+    if "error" in obj:
+        return obj
     result = obj.get("result", {})
+    sc = result.get("structuredContent")
+    if isinstance(sc, dict):
+        return sc
     if "content" in result and result["content"]:
         text = result["content"][0].get("text", "")
         try:
@@ -74,7 +86,7 @@ def call_tool(url, name, args=None):
 
 
 def deploy_file(url, local_path, slot=0):
-    """把本地文件通过远程 deploy_payload 下发到设备的 flash 仓。
+    """把本地文件通过远程 update 下发到设备的 flash 仓。
 
     这条路径**不碰目标机的任何东西**:内容只进设备 flash,
     下次开机由 overlay 铺到 RAM disk 槽位。
@@ -85,7 +97,7 @@ def deploy_file(url, local_path, slot=0):
     payload = base64.b64encode(raw).decode("ascii")
     print("deploying %s (%d bytes -> %d b64) to slot %d" %
           (local_path, len(raw), len(payload), slot))
-    return call_tool(url, "deploy_payload", {"slot": slot, "base64": payload})
+    return call_tool(url, "update", {"slot": slot, "base64": payload})
 
 
 def main():
@@ -120,7 +132,7 @@ def main():
             else:
                 # 简写:直接给一个字符串参数(避免 PowerShell 传 JSON 时
                 # 把双引号剥掉 —— 那个坑踩过两次)
-                args = {"target": raw}
+                args = {"name": raw}
         print(json.dumps(call_tool(url, name, args), ensure_ascii=False, indent=2))
         return 0
 
@@ -155,9 +167,9 @@ def main():
         return 1
 
     print("")
-    for tool, args in (("device/info", None),
-                       ("watcher/status", None),
-                       ("observe", {"target": "preview"})):
+    for tool, args in (("status", None),
+                       ("ls", None),
+                       ("read", {"name": "AGENT.SH"})):
         print("=== L2c: tools/call %s ===" % tool)
         try:
             print(json.dumps(call_tool(url, tool, args), ensure_ascii=False, indent=2))

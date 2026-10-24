@@ -5,7 +5,7 @@
 要验的四件事:
   1. 长动作(注入类)立刻回 accepted,不等它跑完;
   2. 动作在跑时,再来一个动作请求**立刻**回 busy(不是排队等);
-  3. 动作在跑时,读类请求(device/info / observe)照常服务;
+  3. 动作在跑时,读类请求(status / ls / read)照常服务;
   4. 动作跑完后,单例槽释放(busy=false),盘上出现标记文件。
 
 用法:
@@ -40,7 +40,12 @@ def rpc(url, method, params=None, rpc_id=1):
 
 def call(url, name, args=None):
     obj = rpc(url, "tools/call", {"name": name, "arguments": args or {}})
+    if "error" in obj:
+        return {"ok": False, "error": obj["error"].get("message", "")}
     result = obj.get("result", {})
+    sc = result.get("structuredContent")
+    if isinstance(sc, dict):
+        return sc
     if "content" in result and result["content"]:
         text = result["content"][0].get("text", "")
         try:
@@ -67,11 +72,11 @@ def main():
     url = "http://%s:8080/mcp" % host
 
     print("=== 0) baseline ===")
-    ms, info = timed(url, "device/info")
-    print("  device/info  %6.0f ms  busy=%s" % (ms, info.get("busy")))
+    ms, info = timed(url, "status")
+    print("  status       %6.0f ms  busy=%s" % (ms, info.get("busy")))
 
-    print("=== 1) long action: act macro=%s (expect: fast accept) ===" % macro)
-    ms, res = timed(url, "act", {"action": "macro", "macro": macro})
+    print("=== 1) long action: input macro=%s (expect: fast accept) ===" % macro)
+    ms, res = timed(url, "input", {"action": "macro", "macro": macro})
     print("  %6.0f ms  ok=%s accepted=%s busy=%s" %
           (ms, res.get("ok"), res.get("accepted"), res.get("busy")))
     if not res.get("accepted"):
@@ -79,7 +84,7 @@ def main():
         return 1
 
     print("=== 2) while running: another action (expect: immediate busy) ===")
-    ms, res2 = timed(url, "act", {"action": "tap", "key": "a"})
+    ms, res2 = timed(url, "input", {"action": "tap", "key": "a"})
     print("  %6.0f ms  ok=%s busy=%s error=%s" %
           (ms, res2.get("ok"), res2.get("busy"), res2.get("error")))
     if res2.get("busy") is not True:
@@ -90,15 +95,15 @@ def main():
         return 1
 
     print("=== 3) while running: read tools still served ===")
-    ms, info2 = timed(url, "device/info")
-    print("  device/info  %6.0f ms  busy=%s" % (ms, info2.get("busy")))
-    ms, ws = timed(url, "watcher/status")
-    print("  watcher/status %4.0f ms  running=%s" % (ms, ws.get("running")))
+    ms, info2 = timed(url, "status")
+    print("  status       %6.0f ms  busy=%s" % (ms, info2.get("busy")))
+    ms, ws = timed(url, "status")
+    print("  status.watcher running=%s" % (ws.get("watcher", {}) or {}).get("running"))
 
     print("=== 4) wait for the slot to be released ===")
     t0 = time.time()
     while time.time() - t0 < 40:
-        _, i = timed(url, "device/info")
+        _, i = timed(url, "status")
         if not i.get("busy"):
             break
         time.sleep(0.5)
@@ -110,18 +115,18 @@ def main():
     print("=== 5) marker file (the objective verdict) ===")
     for attempt in range(3):
         try:
-            _, obs = timed(url, "observe", {"target": "INJ.TXT"})
-            print("  observe INJ.TXT -> ok=%s file=%s" % (obs.get("ok"), obs.get("file")))
+            _, obs = timed(url, "read", {"name": "INJ.TXT"})
+            print("  read INJ.TXT -> ok=%s file=%s" % (obs.get("ok"), obs.get("file")))
             if obs.get("ok"):
                 break
         except Exception as e:
-            print("  observe attempt %d failed: %s" % (attempt + 1, e))
+            print("  read attempt %d failed: %s" % (attempt + 1, e))
         time.sleep(1.0)
     if macro == "launch_watcher":
-        _, obs = timed(url, "observe", {"target": "CAP.TXT"})
-        print("  observe CAP.TXT -> ok=%s file=%s" % (obs.get("ok"), obs.get("file")))
-        _, ws = timed(url, "watcher/status")
-        print("  watcher/status running=%s" % ws.get("running"))
+        _, obs = timed(url, "read", {"name": "CAP.TXT"})
+        print("  read CAP.TXT -> ok=%s file=%s" % (obs.get("ok"), obs.get("file")))
+        _, ws = timed(url, "status")
+        print("  status.watcher running=%s" % (ws.get("watcher", {}) or {}).get("running"))
 
     print("PASS")
     return 0

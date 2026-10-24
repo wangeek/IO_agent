@@ -311,7 +311,7 @@ def main():
         print("device '%s' not found on the LAN (service %s)" % (args.name, args.service),
               file=sys.stderr)
         print("check: is the dongle powered? is it on the same subnet? "
-              "is the mDNS responder up (device/info.led == 0)?", file=sys.stderr)
+              "is the mDNS responder up (status.led == 0)?", file=sys.stderr)
         return 1
     print(found["url"])
     return 0

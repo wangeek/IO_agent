@@ -3,10 +3,10 @@
 """ime_flow_probe.py -- 验收"探针式 IME 处理"（2026-10-23）。
 
 新流程（设备端**零自动重试**，重试由 agent 决定）：
-    act macro=selftest        -> INJ.TXT 出现 = 当时 IME 在英文态
-    （没出现）act macro=ime_toggle   -> 单按一次 Shift 切输入法态
-    act macro=selftest        -> 再验一次
-    act macro=launch_watcher  -> 设备内部先探针再打启动命令 -> CAP.TXT
+    input macro=selftest        -> INJ.TXT 出现 = 当时 IME 在英文态
+    （没出现）input macro=ime_toggle   -> 单按一次 Shift 切输入法态
+    input macro=selftest        -> 再验一次
+    input macro=launch_watcher  -> 设备内部先探针再打启动命令 -> CAP.TXT
 
 用法:
     python tools/ime_flow_probe.py 172.17.21.225
@@ -53,7 +53,7 @@ def call(url, name, args=None):
 def wait_idle(url, timeout=60):
     t0 = time.time()
     while time.time() - t0 < timeout:
-        info = call(url, "device/info")
+        info = call(url, "status")
         if not info.get("busy"):
             return time.time() - t0
         time.sleep(0.3)
@@ -67,11 +67,11 @@ def mtime(path):
         return 0.0
 
 
-def act_macro(url, macro, **extra):
+def input_macro(url, macro, **extra):
     args = {"action": "macro", "macro": macro}
     args.update(extra)
     t0 = time.time()
-    r = call(url, "act", args)
+    r = call(url, "input", args)
     return (time.time() - t0) * 1000.0, r
 
 
@@ -84,10 +84,10 @@ def main():
     os.environ["NO_PROXY"] = os.environ["no_proxy"]
     url = "http://%s:8080/mcp" % host
 
-    print("=== 1) probe the IME state (act macro=selftest, no Shift) ===")
+    print("=== 1) probe the IME state (input macro=selftest, no Shift) ===")
     english = False
     before = mtime(VOL)
-    ms, r = act_macro(url, "selftest")
+    ms, r = input_macro(url, "selftest")
     print("  accepted in %.0f ms -> %s" % (ms, r.get("accepted")))
     wait_idle(url)
     if mtime(VOL) > before:
@@ -102,7 +102,7 @@ def main():
     print("=== 2) launch_watcher (ime=%s) ===" % ("none" if english else "toggle"))
     before = mtime(CAP)
     extra = {} if english else {"ime": "toggle"}
-    ms, r = act_macro(url, "launch_watcher", **extra)
+    ms, r = input_macro(url, "launch_watcher", **extra)
     print("  accepted in %.0f ms -> %s" % (ms, r.get("accepted")))
     dt = wait_idle(url)
     print("  slot free after %.1f s" % dt if dt >= 0 else "  TIMEOUT")
@@ -110,8 +110,8 @@ def main():
     print("  CAP.TXT %s" % ("appeared -> the watcher is up" if after > before else "MISSING"))
 
     print("=== 3) read tools still served ===")
-    ms, ws = call(url, "watcher/status"), None
-    print("  watcher/status: %s" % (ms[0] if isinstance(ms, tuple) else ms))
+    ms, ws = call(url, "status"), None
+    print("  status.watcher: %s" % ((ws.get("watcher", {}) or {}).get("running")))
     print("PASS" if after > before else "FAIL")
     return 0 if after > before else 1
 

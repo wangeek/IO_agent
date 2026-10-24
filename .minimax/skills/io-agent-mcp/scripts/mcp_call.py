@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Call the IO_Agent MCP server (or fetch a blob) from the host.
+"""Call the IO_Agent MCP server (or fetch a file) from the host.
 
 Why this script exists instead of "just use curl":
 
@@ -13,15 +13,15 @@ Why this script exists instead of "just use curl":
     is where quoting bugs live.
 
 Usage:
-    python mcp_call.py --endpoint http://172.17.21.225:8080/mcp --info
+    python mcp_call.py --endpoint http://172.17.21.225:8080/mcp --status
     python mcp_call.py --endpoint http://172.17.21.225:8080/mcp --list
     python mcp_call.py --endpoint http://172.17.21.225:8080/mcp \
-        --tool device/info
+        --tool status
     python mcp_call.py --endpoint http://172.17.21.225:8080/mcp \
-        --tool act --args '{"action":"tap","key":"ENTER"}'
+        --tool input --args '{"action":"tap","key":"ENTER"}'
     python mcp_call.py --endpoint http://172.17.21.225:8080/mcp \
         --method tools/list
-    python mcp_call.py --fetch http://172.17.21.225:8080/blob/b0 --out frame.jpg
+    python mcp_call.py --fetch http://172.17.21.225:8080/files/SNAP_P.JPG --out frame.jpg
 
     --args / --params accept a JSON string, or @path to read JSON from a file.
 
@@ -128,9 +128,9 @@ def main():
     ap.add_argument("--args", help="tool arguments: JSON string or @file")
     ap.add_argument("--method", help="raw JSON-RPC method, e.g. tools/list")
     ap.add_argument("--params", help="JSON-RPC params: JSON string or @file")
-    ap.add_argument("--info", action="store_true", help="shortcut for --tool device/info")
+    ap.add_argument("--status", action="store_true", help="shortcut for --tool status")
     ap.add_argument("--list", action="store_true", help="shortcut for --method tools/list")
-    ap.add_argument("--fetch", help="fetch a blob URL instead of calling MCP")
+    ap.add_argument("--fetch", help="fetch a file URL instead of calling MCP")
     ap.add_argument("--out", help="where --fetch writes the bytes")
     ap.add_argument("--timeout", type=float, default=TIMEOUT,
                     help="seconds before giving up (default %d)" % int(TIMEOUT))
@@ -143,8 +143,8 @@ def main():
     if not args.endpoint:
         raise SystemExit("--endpoint is required (run discover.py to get it)")
 
-    if args.info:
-        status, body = call_tool(args.endpoint, "device/info", None, args.timeout)
+    if args.status:
+        status, body = call_tool(args.endpoint, "status", None, args.timeout)
     elif args.tool:
         status, body = call_tool(args.endpoint, args.tool, read_json_arg(args.args),
                                  args.timeout)
@@ -154,7 +154,7 @@ def main():
     elif args.list:
         status, body = rpc(args.endpoint, "tools/list", timeout=args.timeout)
     else:
-        raise SystemExit("nothing to do: pass --info / --list / --tool / --method / --fetch")
+        raise SystemExit("nothing to do: pass --status / --list / --tool / --method / --fetch")
 
     if args.raw:
         print(body)
@@ -176,6 +176,43 @@ def main():
     except ValueError:
         print(body)
         return 0
+
+    # A tool result carries the machine-readable payload in structuredContent.
+    # Print that (not the whole envelope) so the output is directly usable,
+    # and surface the image block separately -- it is base64 and would drown
+    # the terminal.
+    if isinstance(parsed, dict) and "result" in parsed:
+        result = parsed["result"] or {}
+        if isinstance(result, dict) and "structuredContent" in result:
+            sc = result["structuredContent"]
+            image = None
+            for item in result.get("content", []) or []:
+                if item.get("type") == "image":
+                    image = item
+                    break
+            if image is not None:
+                if args.out:
+                    import base64
+                    data = base64.b64decode(image.get("data", ""))
+                    with open(args.out, "wb") as f:
+                        f.write(data)
+                    print("saved %d bytes (%s) -> %s" % (
+                        len(data), image.get("mimeType", "?"), args.out))
+                else:
+                    print("image block: %d base64 chars (%s) -- pass --out to save it"
+                          % (len(image.get("data", "")), image.get("mimeType", "?")),
+                          file=sys.stderr)
+            if result.get("isError"):
+                print("(the tool reported an error -- isError: true)", file=sys.stderr)
+            print(json.dumps(sc, ensure_ascii=False, indent=2))
+            return 0
+        if "error" in parsed:
+            err = parsed["error"]
+            print("JSON-RPC error %s: %s" % (err.get("code"), err.get("message")),
+                  file=sys.stderr)
+            print(json.dumps(parsed, ensure_ascii=False, indent=2))
+            return 1
+
     print(json.dumps(parsed, ensure_ascii=False, indent=2))
     return 0
 

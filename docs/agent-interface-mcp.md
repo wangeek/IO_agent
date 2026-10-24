@@ -22,23 +22,25 @@ ForegroundLockTimeout)、UIPI/窗口站隔离、提权窗与独占全屏的软�
 
 ## 二、MCP 原语与工具集
 
-设备端 MCP 工具集共 **5 个**(定案见 `connectivity-and-binding.md` §六):
-`act` / `observe` / `watcher(start|stop|status)` / `device(info)` / `deploy_payload`。
+设备端 MCP 工具集共 **6 个**(定案见 `connectivity-and-binding.md` §六):
+`status` / `ls` / `read` / `capture` / `input` / `update`。
+命名规则:**全是动词,全小写单词,零分隔符**。
 本文详述前两个核心原语:
 
-1. **act(sequence)**:动作序列(按键/鼠标 + 内嵌延时)一次下发,
+1. **input(sequence)**:动作序列(按键/鼠标 + 内嵌延时)一次下发,
    ESP32 本地按序执行。禁止逐条 WiFi 往返(时序必坏)。
-   type/click/组合键都是 act 的宏(Alt+Tab = 按住→点按→松开)。
-2. **observe(opts)**:`opts ⊆ {全屏, roi(x,y,w,h), quality, diff, max_age_ms}`。
-   diff = 相邻帧变化区域清单。
-3. **deploy_payload(slot, bytes)**:**2026-10-22 增**(T2)。agent 运行时把宿主要执行的
+   type/click/组合键都是 input 的宏(Alt+Tab = 按住→点按→松开)。
+2. **read(name) / capture()**:`read` 按 8.3 文件名读共享盘上的文件;`capture` 取**最新一帧**
+   (按 FAT16 最后写入时间判),回作 MCP 原生 image 块。差分区域(diff)由 agent 侧做,
+   设备不解码、不比对(哑设备原则)。
+3. **update(slot, bytes)**:**2026-10-22 增**(T2)。agent 运行时把宿主要执行的
    引导脚本下发到设备,设备落 flash 仓并在 RAM disk 槽位上生效。详见下节。
 
 (预留)**file/exec**:L1 RESP 通道落地后再暴露。
 
-标准闭环:`act → observe(diff/roi) → 决策`,全链无人工。
+标准闭环:`input → capture → 决策`,全链无人工。
 
-## 二之二、deploy_payload:运行时下发,出厂不带业务文件(2026-10-22)
+## 二之二、update:运行时下发,出厂不带业务文件(2026-10-22)
 
 **动机**:生成一个启动脚本的成本极低(AI 现场就能写),把它预置进固件占 flash 是浪费;
 而目标机不能落盘(无痕性),脚本又必须从设备来。解法是**出厂只带薄引导槽,内容运行时下发**。
@@ -118,7 +120,7 @@ Windows 释放原簇链另分配,设备按构建期算好的簇偏移就读不�
 设备 200 ms 轮询信箱头,发现变化 → CRC 校验 → **落 flash**(下次开机铺到槽位)。
 开机首轮会比对 flash 已有快照,内容相同则跳过擦写(**幂等**)。
 
-**M5 落地后,MCP `deploy_payload` 直接调 `io_payload_store(slot, bytes)`**,
+**M5 落地后,MCP `update` 直接调 `io_payload_store(slot, bytes)`**,
 信箱只是它的等价前置通道,协议本身不用改。
 
 ## 二之三、注入的安全语义(2026-10-22 事故后定案)
@@ -149,14 +151,15 @@ Windows 账户防暴力锁定(实测事故:设备每 3 秒重试一轮,目标机
 |---|---|---|
 | `/mcp` | POST | JSON-RPC 2.0(`initialize` / `tools/list` / `tools/call`) |
 | `/ping` | GET | 最小存活探针(不构造 JSON 就能确认 HTTP 层活着) |
-| `/blob/b0..b3` | GET | 观察帧原字节(4 个固定槽位;通配 URI 在 IDF 5.5 上不匹配,用精确路径) |
+| `/files/<name>` | GET | 共享盘上某个文件的**原始字节**(按文件名取,不再有 blob 槽位) |
 
-工具:`device/info` / `act` / `observe` / `watcher/status` / `deploy_payload`。
+工具(`status` / `ls` / `read` / `capture` / `input` / `update`)。
 
-- **`observe`** 读目标机上 watcher 写的快照文件(`SNAP_P.JPG` / `SNAP_A.JPG` / `SNAP_R.JPG` /
-  `DIFF.IDX`),**设备不解码、不比对,只搬运**(哑设备原则);`target` 传任意 8.3 文件名
-  时直接读根目录里那个文件(也能用来验证 `find_file`/`read_file`)。
-- **`act`** 动作:`type` / `tap` / `hotkey` / `move` / `click` / `scroll` /
+- **`read`** 读共享盘上的文件(`name` 传 8.3 文件名),文本内联、JPEG 走 MCP 原生
+  image 块、太大的只给 URL;**设备不解码、不比对,只搬运**(哑设备原则)。
+- **`capture`** 取最新一帧(按 FAT16 最后写入时间判),回作 image 块。
+- **`ls`** 列盘上的文件(名/大小/最后写入时间/是否帧)。
+- **`input`** 动作:`type` / `tap` / `hotkey` / `move` / `click` / `scroll` /
   `macro(focus_reset | selftest | launch_watcher)`。链路不可用时直接报错,不盲发。
   - `tap` / `hotkey` 的 `key` **既接受可打印字符,也接受命名键**
     (`SHIFT` / `CTRL` / `ALT` / `WIN` / `ENTER` / `ESC` / `SPACE` / `TAB` /
@@ -170,7 +173,7 @@ Windows 账户防暴力锁定(实测事故:设备每 3 秒重试一轮,目标机
     短动作(tap/hotkey/move/click/scroll/短 type)在请求里同步执行完。
   - **单例 + busy**:同一时刻只跑一个动作;动作在跑时再来一个动作请求 →
     立刻回 `{"ok":false,"busy":true}`(不排队执行)。
-    读类工具(observe / watcher/status / device/info)在动作执行期间**照常服务**。
+    读类工具(ls / read / capture / status)在动作执行期间**照常服务**。
   - **输入态要"先测后打"**(2026-10-23 实测):输入态由 IME 实例记忆,盲按 Shift
     的结果取决于上一轮(历史实测 OK/FAIL 交替)。所以:
     ① `macro=selftest` = 探针(它打的就是自检命令):`INJ.TXT` 出现 ⇒ 当前是
@@ -181,10 +184,10 @@ Windows 账户防暴力锁定(实测事故:设备每 3 秒重试一轮,目标机
     `"ime":"toggle"`(新框继承中文 → Shift 一下 → 英文)。
     **设备端不自动重试**(注入是破坏性操作),重试由 agent 决定。
   - **动作不再自动回传前后两帧**:异步模型下"后一张"没有意义(请求早返回了),
-    由 agent 自己用 `observe` 取前后帧来比对。
+    由 agent 自己用 `capture` 取前后帧来比对。
   - `macro=selftest` 注入一条把标记写回盘的命令,设备以盘上是否出现 `INJ.TXT`
     判定"HID 真的到达了目标机";`macro=launch_watcher` 同理以 `CAP.TXT` 判定。
-- **`deploy_payload`** 落 flash,**下次开机生效**(真源/副本契约)。
+- **`update`** 落 flash,**下次开机生效**(真源/副本契约)。
 
 **当前实现状态**:明文 HTTP;凭据在 NVS,**用 UART0 控制台配网**
 (`wifi scan` / `wifi set <ssid> [pass]` / `psk set <psk>` / `name set <n>` / `status`),
@@ -197,7 +200,7 @@ Windows 账户防暴力锁定(实测事故:设备每 3 秒重试一轮,目标机
 
 | 规则 | 行为 |
 |---|---|
-| body 大小 | 上限 **128 KB**,超了回 **413**(上限按最大的合法请求 `deploy_payload` 定:64 KB 原字节 → base64 ≈ 87 KB) |
+| body 大小 | 上限 **128 KB**,超了回 **413**(上限按最大的合法请求 `update` 定:64 KB 原字节 → base64 ≈ 87 KB) |
 | `Content-Type` | 必须是 `application/json`(可带 `charset`),否则回 **415** |
 | `Host` | 主机部分必须是设备自己(当前 IP / 设备名 / 设备名.local),否则回 **403** |
 | `Origin` | 带了就必须也是设备自己,否则回 **403**(native agent 不发 Origin ⇒ 这是 DNS rebinding 防护) |
@@ -217,7 +220,7 @@ Windows 账户防暴力锁定(实测事故:设备每 3 秒重试一轮,目标机
 **发起方不等结果**,结果由盘上标记文件回读(不需要 job 状态机/轮询端点)。
 附带好处:注入进行中**读类工具照常服务** —— 注入时"眼"是睁着的。
 
-`device/info` 带 `busy` 字段(agent 轮询它就知道后台动作跑完没有)。
+`status` 带 `busy` 字段(agent 轮询它就知道后台动作跑完没有),也带 `watcher.running`。
 
 验收方式用**裸 HTTP 构造**(不依赖 MCP 客户端):`tools/mcp_probe.py`。
 注意 **PowerShell 把 JSON 传给 `curl.exe` 会吃掉双引号**(报 `invalid JSON`),
@@ -309,7 +312,7 @@ status: link=1 mounted=1 suspended=0 enumerated=1 hid_ready=1 sectors=8192 writt
 
 | 模式 | 说明 | 代价 |
 |---|---|---|
-| **相对(默认)** | 标准鼠标报告,只有 dx/dy | "点中具体像素"要靠步进试错;但与本项目闭环哲学相容:`act → observe(diff) → 决策`,视觉反馈足以修正 |
+| **相对(默认)** | 标准鼠标报告,只有 dx/dy | "点中具体像素"要靠步进试错;但与本项目闭环哲学相容:`input → capture → 决策`,视觉反馈足以修正 |
 | 绝对(后续增强) | Generic Desktop/Mouse + 绝对逻辑范围(**不用 Digitizer 页**,否则 Windows 当成触摸) | 需目标机主屏分辨率(`CAP.TXT` 的 `screen` 字段已有);多显示器只在主屏范围有效 |
 
 ### 光标不可见的坑(必须处理)
@@ -326,7 +329,7 @@ agent 看到的是一张"没有光标的屏幕",无法知道光标当前位置 �
 1. **UAC 安全桌面:手通眼盲,但有降级阶梯(2026-10-20 修订:不是断点,是 1-3s 盲窗)**。
    物理 HID 与真实键盘同栈,输入能到达安全桌面;UAC 弹窗键盘可导航——管理员
    账户默认按钮即"是"。降级阶梯:
-   - **盲过(默认)**:act = 触发提权 → 延时 ~2s → Enter/Alt+Y;期间 observe
+   - **盲过(默认)**:input = 触发提权 → 延时 ~2s → Enter/Alt+Y;期间 capture
      上报 `secure_desktop`,agent 明知盲行,弹窗后恢复观察。闭环只慢 ~3s。
    - **一次提权持久受益**:盲过拉起提权级驻守,后续提权免弹窗;同提权级下
      UIPI 解除,能力面扩大。
@@ -363,5 +366,5 @@ agent 看到的是一张"没有光标的屏幕",无法知道光标当前位置 �
 
 - 手:act 一次下发,本地序列执行,<10ms/步
 - 眼:全屏 ≤1s(L1 预算 ~350ms);ROI 回传再降一个量级
-- 闭环:act→observe(diff)→决策,无人工、无 agent 侧对目标机的软件依赖
-- 状态诚实:observe 三态(正常帧/无信号/黑帧)+ secure_desktop,不误报
+- 闭环:input→capture→决策,无人工、无 agent 侧对目标机的软件依赖
+- 状态诚实:capture 三态(正常帧/无信号/黑帧)+ secure_desktop,不误报

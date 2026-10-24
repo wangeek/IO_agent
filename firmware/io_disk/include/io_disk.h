@@ -82,6 +82,8 @@ const io_slot_desc_t *io_disk_slot_at(uint32_t index);
 typedef struct {
     uint32_t size;           /**< 文件字节数 */
     uint16_t first_cluster;  /**< 起始簇号 */
+    char     name[13];       /**< 8.3 名,如 "SNAP_P.JPG";没取到时是空串 */
+    int64_t  mtime;          /**< 最后写入时间(Unix 秒);目录项没写时间则 0 */
 } io_file_info_t;
 
 /** FAT16 几何信息(设备端只读解析用)。 */
@@ -108,13 +110,26 @@ typedef struct {
  */
 bool io_disk_find_file(const char *name, io_file_info_t *out);
 
+/**
+ * 列根目录(只读扫描,和 find_file 同一套解析)。
+ *
+ * 用途:agent 要知道"盘上现在有什么、哪个最新"。**最后写入时间**是关键:
+ * 帧是目标机上的 watcher 写的(FAT16 目录项里带时间戳),所以"最新的一帧"
+ * = 最后写入时间最大的那个帧文件。
+ *
+ * @param out  可为 NULL(只要个数)
+ * @param max  out 能装多少项
+ * @return 实际找到的文件数(可能大于 max)
+ */
+size_t io_disk_list_files(io_file_info_t *out, size_t max);
+
 /** 取 FAT16 几何信息(只读)。 */
 esp_err_t io_disk_fat_geometry(io_fat_geom_t *g);
 
 /**
  * 读一个文件的**内容**(只读:沿簇链走 FAT,不改任何字节)。
  *
- * 用途:observe 工具把目标机上的快照文件原样转发给 agent ——
+ * 用途:read / capture 工具把共享盘上的文件原样转发给 agent ——
  * 设备不解码、不比对,只搬运(哑设备原则)。
  *
  * @param buf     接收缓冲

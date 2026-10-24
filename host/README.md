@@ -7,10 +7,11 @@
 1. **发现设备**:mDNS 扫 `_ioagent._tcp.local` → 拿到设备地址与型号,不用手填 IP。
 2. **配对**:首次连接出示一次性配对码 → 设备校验后换回长期 PSK(存本地)。
 3. **调用**:直接用标准 MCP 客户端连设备的 MCP server,调用
-   - `act(sequence)` — 动作序列(按键/鼠标 + 内嵌延时)一次下发,设备本地按序执行(<10ms/步)
-   - `observe(opts)` — `opts ⊆ {全屏, roi(x,y,w,h), quality, diff, max_age_ms}`
-   - `watcher(action=start|stop|status)` — 目标机驻守脚本的拉起与状态
-   - `device(info)` — 设备信息与能力
+   - `status` — 设备身份与状态(含 `watcher.running`)
+   - `ls` / `read` — 列共享盘 / 按 8.3 文件名读
+   - `capture` — 取最新一帧(MCP 原生 image 块)
+   - `input` — 动作序列(按键/鼠标 + 内嵌延时)一次下发,设备本地按序执行(<10ms/步)
+   - `update` — 把内容写进 flash 槽位(下次开机生效)
 4. **本地缓存(可选)**:把抓到的帧落盘,便于回看与对比。
 
 ## 目录

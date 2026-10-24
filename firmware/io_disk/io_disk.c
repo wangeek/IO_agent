@@ -400,6 +400,81 @@ static bool fat_make_83(const char *in, uint8_t out[11])
     return (*in == '\0');
 }
 
+/* FAT16 目录项里另外两个我们要的字段:最后写入时间/日期。 */
+#define FAT_DIRENT_MTIME_OFF   24     /* 最后写入时间(2 字节) */
+#define FAT_DIRENT_MDATE_OFF   26     /* 最后写入日期(2 字节) */
+#define FAT_DIRENT_ATTR_DIR    0x10   /* 子目录 */
+
+/*
+ * 8.3 目录项名 -> "NAME.EXT"。
+ * 目录项里是 8 字节名 + 3 字节扩展,空格补齐;扩展为空时不带点。
+ */
+static void fat_dirent_name(const uint8_t *e, char *out)
+{
+    char base[9];
+    char ext[4];
+    memcpy(base, e, 8);
+    base[8] = '\0';
+    for (int i = 7; i >= 0 && base[i] == ' '; i--) {
+        base[i] = '\0';
+    }
+    memcpy(ext, e + 8, 3);
+    ext[3] = '\0';
+    for (int i = 2; i >= 0 && ext[i] == ' '; i--) {
+        ext[i] = '\0';
+    }
+    if (ext[0]) {
+        snprintf(out, 13, "%s.%s", base, ext);
+    } else {
+        snprintf(out, 13, "%s", base);
+    }
+}
+
+/*
+ * FAT16 的最后写入时间/日期 -> Unix 秒。
+ *
+ * 时间位(2 字节): bit15-11=时, bit10-5=分, bit4-0=秒/2
+ * 日期位(2 字节): bit15-9=年-1980, bit8-5=月, bit4-0=日
+ *
+ * 用的是标准的"从 1970-01-01 算天数"算法(Howard Hinnant 的 civil 算法),
+ * 闰年规则才不会错。
+ */
+static int64_t fat_mtime_to_epoch(uint16_t time, uint16_t date)
+{
+    if (date == 0 || time == 0) {
+        return 0;
+    }
+    const int year = 1980 + (int)((date >> 9) & 0x7F);
+    const int month = (int)((date >> 5) & 0x0F);
+    const int day = (int)(date & 0x1F);
+    const int hour = (int)((time >> 11) & 0x1F);
+    const int minute = (int)((time >> 5) & 0x3F);
+    const int second = (int)(time & 0x1F) * 2;
+    if (month < 1 || month > 12 || day < 1 || day > 31) {
+        return 0;
+    }
+    int64_t y = year;
+    y -= (month <= 2) ? 1 : 0;
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const int64_t yoe = y - era * 400;
+    const int64_t doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+    const int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    const int64_t days = era * 146097 + doe - 719468;   /* 1970-01-01 是第 0 天 */
+    return days * 86400 + hour * 3600 + minute * 60 + second;
+}
+
+/* 把一个目录项解析成 io_file_info_t。 */
+static void fat_dirent_to_info(const uint8_t *e, io_file_info_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->size = (uint32_t)e[0x1C] | ((uint32_t)e[0x1D] << 8) |
+                ((uint32_t)e[0x1E] << 16) | ((uint32_t)e[0x1F] << 24);
+    out->first_cluster = fat_rd16(&e[0x1A]);
+    fat_dirent_name(e, out->name);
+    out->mtime = fat_mtime_to_epoch(fat_rd16(&e[FAT_DIRENT_MTIME_OFF]),
+                                    fat_rd16(&e[FAT_DIRENT_MDATE_OFF]));
+}
+
 bool io_disk_find_file(const char *name, io_file_info_t *out)
 {
     uint8_t want[11];
@@ -428,13 +503,46 @@ bool io_disk_find_file(const char *name, io_file_info_t *out)
             continue;
         }
         if (out) {
-            out->size = (uint32_t)e[0x1C] | ((uint32_t)e[0x1D] << 8) |
-                        ((uint32_t)e[0x1E] << 16) | ((uint32_t)e[0x1F] << 24);
-            out->first_cluster = fat_rd16(&e[0x1A]);
+            fat_dirent_to_info(e, out);
         }
         return true;
     }
     return false;
+}
+
+size_t io_disk_list_files(io_file_info_t *out, size_t max)
+{
+    uint32_t entries = 0;
+
+    if (!s_vol) {
+        return 0;
+    }
+    const uint32_t root_off = fat_root_dir_offset(&entries);
+    if (root_off == 0) {
+        return 0;
+    }
+
+    size_t n = 0;
+    for (uint32_t i = 0; i < entries; i++) {
+        const uint8_t *e = s_vol + root_off + (size_t)i * FAT_DIRENT_SIZE;
+        if (e[0] == FAT_DIRENT_FREE) {
+            break;                      /* 后面的项都是空的 */
+        }
+        if (e[0] == FAT_DIRENT_DELETED) {
+            continue;                   /* 已删除 */
+        }
+        if (e[11] & FAT_DIRENT_ATTR_VOLUME) {
+            continue;                   /* 卷标 */
+        }
+        if (e[11] & FAT_DIRENT_ATTR_DIR) {
+            continue;                   /* 子目录:设备这边不处理 */
+        }
+        if (out && n < max) {
+            fat_dirent_to_info(e, &out[n]);
+        }
+        n++;
+    }
+    return n;
 }
 
 esp_err_t io_disk_apply_slot(const io_slot_desc_t *slot, const void *data, uint32_t len)

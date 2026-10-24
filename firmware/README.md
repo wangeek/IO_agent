@@ -18,7 +18,7 @@ idf.py create-project -p ../.. firmware   # 在 IO_agent 根目录执行
 | `io_launcher/` | 拉起目标机 watcher:卷标解析的启动命令 + `CAP.TXT` 闭环。**默认关**(`IO_LAUNCHER_AUTOSTART=0`)—— 往用户机器注入是对用户环境的破坏性操作,只允许远程 `act` 单次触发、零重试 |
 | `io_cfg/` | NVS 配置(WiFi 凭据 / PSK / 设备名)+ **UART0 控制台**(`wifi scan` / `wifi set <ssid> [pass]` / `psk set` / `name set` / `status`)。凭据不进仓库、不进固件二进制 |
 | `io_net/` | WiFi STA + 退避重连(无凭据时不重试);mDNS 发现待做(IDF 5.5 无内置 mDNS 组件) |
-| `io_mcp/` | MCP server:HTTP + JSON-RPC 2.0,端点 `/mcp` / `/ping` / `/blob/b0..3`,工具 `device/info` / `act` / `observe` / `watcher/status` / `deploy_payload`。**当前明文 HTTP**,TLS-PSK 待做 |
+| `io_mcp/` | MCP server:HTTP + JSON-RPC 2.0,端点 `/mcp` / `/files/<name>` / `/ping`,工具 `status` / `ls` / `read` / `capture` / `input` / `update`。**当前明文 HTTP**,TLS-PSK 待做 |
 | `capability/` | 能力注册表:编译期开关 + 运行时查询,状态机只查"我现在有什么" |
 
 ## 不可绕的硬件约束(踩坑前先读)
