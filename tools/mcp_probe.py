@@ -19,6 +19,7 @@ mcp_probe.py -- 对设备做裸 HTTP 构造访问(不依赖任何 MCP 客户端�
 """
 
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -29,9 +30,22 @@ import urllib.request
 TIMEOUT = 60
 
 
+def opener():
+    """Never route device traffic through a proxy.
+
+    设备在局域网上。机器上若配了 http_proxy(实测本机 Clash 在 127.0.0.1:7897),
+    裸 urlopen 会把请求交给代理,代理回 **502 Bad Gateway** —— 看起来像设备死了,
+    其实不是。空 ProxyHandler + 清掉环境变量,两头都堵住。
+    """
+    for var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
+                "ALL_PROXY", "all_proxy"):
+        os.environ.pop(var, None)
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def http_get(url):
     req = urllib.request.Request(url, method="GET")
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+    with opener().open(req, timeout=TIMEOUT) as r:
         return r.status, r.read().decode("utf-8", "replace")
 
 
@@ -42,7 +56,7 @@ def rpc(url, method, params=None, rpc_id=1):
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST",
                                  headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+    with opener().open(req, timeout=TIMEOUT) as r:
         return r.status, r.read().decode("utf-8", "replace")
 
 

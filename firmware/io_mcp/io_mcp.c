@@ -1078,7 +1078,7 @@ static void http_drain_body(httpd_req_t *req)
         const size_t want = (left < sizeof(sink)) ? left : sizeof(sink);
         const int r = httpd_req_recv(req, sink, want);
         if (r <= 0) {
-            if (r == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 3) {
+            if (r == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 2) {
                 continue;
             }
             break;
@@ -1304,7 +1304,7 @@ static esp_err_t http_mcp_post(httpd_req_t *req)
                  * HTTP 服务永久卡死(症状:设备还活着,但新连接被拒/挂死)。
                  * 客户端发一半 body 就静默时就会踩到。
                  */
-                if (r == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 3) {
+                if (r == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 2) {
                     continue;
                 }
                 free(body);
@@ -1514,6 +1514,17 @@ esp_err_t io_mcp_start(void)
     cfg.server_port = IO_MCP_PORT;
     cfg.max_uri_handlers = 6;
     cfg.lru_purge_enable = true;
+    /*
+     * recv_wait_timeout:IDF 默认 5 秒,这里压到 2 秒。
+     *
+     * 为什么必须压:esp_http_server 是**单 task**。任何一个"Content-Length 说
+     * 很大、body 却不发完"的客户端,会让 httpd 卡在 httpd_req_recv() 里等满
+     * 3×5=15 秒 —— 期间**所有**其它 agent 请求全部排队,客户端看到的是
+     * "设备失联"(而 WiFi/mDNS 还活着,所以排查方向会被彻底带偏;
+     * 实测就是这样把 MCP 服务器拖到看起来彻底死掉的)。
+     * 正常 body 在 WiFi 上是毫秒级到达,2 秒绰绰有余;坏请求最多堵 ~4 秒。
+     */
+    cfg.recv_wait_timeout = 2;
 
     httpd_handle_t server = NULL;
     esp_err_t rc = httpd_start(&server, &cfg);
