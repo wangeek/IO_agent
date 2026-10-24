@@ -172,9 +172,27 @@ bool io_launcher_last_selftest_ok(void)
     return s_last_selftest_ok;
 }
 
-/* 注入自检:确认 HID 注入链路真的到达了目标机。 */
+/*
+ * 注入自检:确认 HID 注入链路真的到达了目标机。
+ *
+ * ★ 判据必须是"**这次**写的",不能只是"盘上有" ★
+ *   INJ.TXT 留在 RAM disk 里(断电即失,但同一次开机内一直在),上一次
+ *   成功留下的那个还在。**只判存在性** ⇒ 第二次自检会在 1 秒后直接报
+ *   PASSED,哪怕这次注入根本没到达目标机。
+ *   这正好打在"IME 态探针"上:探针的职责是判定当前是中文态还是英文态,
+ *   判错 ⇒ 后面打的全是乱码,而且**看起来一切正常**。
+ *
+ *   所以:注入前记下 INJ.TXT 的最后写入时间,要求它**变了**才算数。
+ *   (FAT 时间戳 2 秒粒度;一次自检本身要 ~7 秒,两次自检不可能落进
+ *    同一个 2 秒桶 ⇒ 不会误判。若目标机没写过这文件,则是"从无到有",
+ *    同样算数。)
+ */
 static bool inject_selftest(void)
 {
+    /* 注入前的基线:文件在不在、在的话它当时的时间戳是多少 */
+    io_file_info_t before;
+    const bool had_before = io_disk_find_file(INJ_FILE, &before);
+
     ESP_LOGI(TAG, "injection self-test: typing the marker command ...");
     if (inject_command(SELFTEST_CMD) != ESP_OK) {
         ESP_LOGE(TAG, "injection self-test: could not type the command");
@@ -183,13 +201,19 @@ static bool inject_selftest(void)
     }
     for (int i = 0; i < INJ_POLL_TRIES; i++) {
         vTaskDelay(pdMS_TO_TICKS(INJ_POLL_MS));
-        if (io_disk_find_file(INJ_FILE, NULL)) {
-            ESP_LOGI(TAG, "injection self-test PASSED (%s appeared)", INJ_FILE);
-            s_last_selftest_ok = true;
-            return true;
+        io_file_info_t now;
+        if (!io_disk_find_file(INJ_FILE, &now)) {
+            continue;                          /* 还没出现 */
         }
+        if (had_before && now.mtime == before.mtime) {
+            continue;                          /* 还是上一次留下的那个,不算数 */
+        }
+        ESP_LOGI(TAG, "injection self-test PASSED (%s refreshed, mtime %lld)",
+                 INJ_FILE, (long long)now.mtime);
+        s_last_selftest_ok = true;
+        return true;
     }
-    ESP_LOGE(TAG, "injection self-test FAILED (%s never appeared) -- "
+    ESP_LOGE(TAG, "injection self-test FAILED (%s never refreshed) -- "
              "HID injection did not reach the host", INJ_FILE);
     s_last_selftest_ok = false;
     return false;

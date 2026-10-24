@@ -104,6 +104,9 @@ python scripts/mcp_call.py --endpoint $EP --tool capture
 
 `capture` picks the frame with the **newest last-write time** and returns it as
 a native MCP `image` block, so your vision capability can look at it directly.
+(That "newest" is decided by the file's last-write stamp on the volume, which has
+**2-second** granularity — two frames written within the same 2 seconds are a
+tie, and the device keeps the first one it sees.)
 The result also names the file it came from (`SNAP_P.JPG` = preview,
 `SNAP_A.JPG` = full, `SNAP_R.JPG` = roi).
 

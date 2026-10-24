@@ -124,8 +124,12 @@ Everything on the shared disk.
 
 - `name` — the 8.3 name. Use it verbatim in `read` and in `/files/<name>`.
 - `size` — bytes.
-- `mtime` — last-write time, Unix seconds. `0` means the directory entry has no
-  timestamp.
+- `mtime` — last-write time of the file, in **seconds**. Read it as a *relative
+  stamp*, not an absolute clock: FAT16 stores **local** wall-clock time with no
+  timezone, and the device interprets it as UTC, so the absolute value differs
+  from the host's UTC epoch by the host's timezone offset. FAT's granularity is
+  **2 seconds**. `0` means the directory entry carries no timestamp. What you
+  can rely on: **which file is newer**, and **whether a file was rewritten**.
 - `frame` — `true` for the watcher's frame files (`SNAP_P.JPG`, `SNAP_A.JPG`,
   `SNAP_R.JPG`).
 
