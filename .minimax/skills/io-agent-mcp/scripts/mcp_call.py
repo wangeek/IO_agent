@@ -35,6 +35,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -102,6 +103,62 @@ def call_tool(endpoint, tool, args, timeout=TIMEOUT):
     return rpc(endpoint, "tools/call", params, timeout=timeout)
 
 
+def structured(envelope):
+    """Pull the machine-readable payload out of a tool result."""
+    if isinstance(envelope, str):
+        try:
+            envelope = json.loads(envelope)
+        except ValueError:
+            return {"raw": envelope}
+    if isinstance(envelope, dict) and "error" in envelope:
+        return envelope
+    result = (envelope or {}).get("result", {})
+    sc = result.get("structuredContent")
+    if isinstance(sc, dict):
+        return sc
+    return result
+
+
+def call_and_parse(endpoint, tool, args=None, timeout=TIMEOUT):
+    """Call one tool and return its structured payload."""
+    _, body = call_tool(endpoint, tool, args, timeout)
+    return structured(body)
+
+
+def wait_for(endpoint, condition, timeout=30.0, interval=0.5):
+    """Poll the device until a condition holds. Returns (payload, waited_s, ok).
+
+    ★ Why this lives on the CLIENT, not on the device ★
+    The device runs one HTTP task. A device-side "wait" tool would have to
+    hold that task for the whole wait, which would block every other
+    request -- including the read-only ones -- for as long as the action
+    runs. That is exactly the hole the device-side worker task was built to
+    avoid. So the polling stays here: the device keeps serving, and the
+    agent still sees ONE step instead of a dozen.
+
+    Two conditions, mirroring the tool names:
+      "idle"     -> status.busy becomes false (the action finished)
+      "file:<N>" -> the named file shows up in ls (an external event)
+    """
+    deadline = time.time() + timeout
+    started = time.time()
+    payload = {}
+    while True:
+        if condition.startswith("file:"):
+            name = condition.split(":", 1)[1].upper()
+            payload = call_and_parse(endpoint, "ls")
+            ok = any(e.get("name", "").upper() == name
+                     for e in payload.get("files", []))
+        else:
+            payload = call_and_parse(endpoint, "status")
+            ok = not payload.get("busy")
+        if ok:
+            return payload, time.time() - started, True
+        if time.time() >= deadline:
+            return payload, time.time() - started, False
+        time.sleep(interval)
+
+
 def fetch(url, out_path, timeout=TIMEOUT):
     req = urllib.request.Request(url, method="GET")
     try:
@@ -135,6 +192,12 @@ def main():
     ap.add_argument("--timeout", type=float, default=TIMEOUT,
                     help="seconds before giving up (default %d)" % int(TIMEOUT))
     ap.add_argument("--raw", action="store_true", help="print the raw HTTP body")
+    ap.add_argument("--wait", action="store_true",
+                    help="poll until no action is running (status.busy == false)")
+    ap.add_argument("--wait-file", metavar="NAME",
+                    help="poll until this 8.3 file name appears on the shared disk")
+    ap.add_argument("--wait-timeout", type=float, default=30.0,
+                    help="seconds to keep polling (default 30)")
     args = ap.parse_args()
 
     if args.fetch:
@@ -142,6 +205,18 @@ def main():
 
     if not args.endpoint:
         raise SystemExit("--endpoint is required (run discover.py to get it)")
+
+    if args.wait or args.wait_file:
+        condition = ("file:%s" % args.wait_file) if args.wait_file else "idle"
+        payload, waited, ok = wait_for(args.endpoint, condition, args.wait_timeout)
+        out = dict(payload) if isinstance(payload, dict) else {}
+        out["waited_s"] = round(waited, 2)
+        out["timed_out"] = not ok
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        if not ok:
+            print("timed out after %.1f s waiting for %s" % (waited, condition),
+                  file=sys.stderr)
+        return 0 if ok else 1
 
     if args.status:
         status, body = call_tool(args.endpoint, "status", None, args.timeout)

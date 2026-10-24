@@ -166,8 +166,19 @@ version:
   and to prove that keystrokes still reach the host at all.
 - **Long actions are asynchronous.** `macro=*` and `type` of more than 16
   characters come back as `{"accepted":true,"busy":true}` and finish in the
-  background. Poll `status` until `busy` is `false`, then read the marker
-  file to learn the outcome.
+  background. Wait for `busy` to become `false`, then read the marker file to
+  learn the outcome. **Use the helper instead of polling by hand:**
+
+  ```bash
+  python scripts/mcp_call.py --endpoint $EP --wait            # wait until busy=false
+  python scripts/mcp_call.py --endpoint $EP --wait-file CAP.TXT   # wait until that file appears
+  ```
+
+  It prints the final payload plus `waited_s` and `timed_out` (exit code 1
+  on timeout). The polling lives **on this side** on purpose: the device runs
+  one HTTP task, so a device-side blocking "wait" would freeze every other
+  request — including the read-only ones — for the whole action. With the
+  helper, the device keeps serving and you still take one step.
 - **Judge success by files, not by the reply.** The device cannot see the
   target machine's screen. `INJ.TXT` (written by the injected command) and
   `CAP.TXT` (written by the watcher) are the objective evidence.

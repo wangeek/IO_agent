@@ -81,7 +81,7 @@ This is a long action: the reply is `{"ok":true,"accepted":true,"busy":true}`.
 Wait for it to finish:
 
 ```bash
-python scripts/mcp_call.py --endpoint $EP --status      # wait until busy == false
+python scripts/mcp_call.py --endpoint $EP --wait        # wait until busy == false
 python scripts/mcp_call.py --endpoint $EP --tool read --args '{"name":"INJ.TXT"}'
 ```
 
@@ -122,7 +122,7 @@ mode was Chinese.
 ### 4. Verify
 
 ```bash
-python scripts/mcp_call.py --endpoint $EP --status      # busy == false
+python scripts/mcp_call.py --endpoint $EP --wait        # busy == false
 python scripts/mcp_call.py --endpoint $EP --tool ls
 ```
 
@@ -138,8 +138,8 @@ focus. It does **not** open a Run box, does not press Enter, and does not
 select anything.
 
 - ≤ 16 characters: runs inline, the result says whether it was emitted.
-- \> 16 characters: runs in the background (`accepted:true, busy:true`); poll
-  `status` for `busy:false`.
+- \> 16 characters: runs in the background (`accepted:true, busy:true`); wait for
+  `busy:false` (`mcp_call.py --wait` does the polling for you).
 - The text goes through the target's IME. **ASCII text typed in Chinese mode
   comes out as garbage** — that is what the probe is for. If you must type
   ASCII and cannot probe, there is no reliable shortcut.
