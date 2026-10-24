@@ -50,7 +50,7 @@ def read_json_arg(value):
     if value.startswith("@"):
         path = value[1:]
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8-sig") as f:
                 return json.load(f)
         except (OSError, ValueError) as exc:
             raise SystemExit("cannot read %s: %s" % (path, exc))
@@ -71,7 +71,7 @@ def opener():
     return urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
-def rpc(endpoint, method, params=None, request_id=1):
+def rpc(endpoint, method, params=None, request_id=1, timeout=TIMEOUT):
     body = {"jsonrpc": "2.0", "id": request_id, "method": method}
     if params is not None:
         body["params"] = params
@@ -86,7 +86,7 @@ def rpc(endpoint, method, params=None, request_id=1):
     req.add_header("Accept", "application/json, text/event-stream")
 
     try:
-        with opener().open(req, timeout=TIMEOUT) as resp:
+        with opener().open(req, timeout=timeout) as resp:
             text = resp.read().decode("utf-8", "replace")
             return resp.status, text
     except urllib.error.HTTPError as exc:
@@ -95,17 +95,17 @@ def rpc(endpoint, method, params=None, request_id=1):
         raise SystemExit("transport error: %s" % exc)
 
 
-def call_tool(endpoint, tool, args):
+def call_tool(endpoint, tool, args, timeout=TIMEOUT):
     params = {"name": tool}
     if args is not None:
         params["arguments"] = args
-    return rpc(endpoint, "tools/call", params)
+    return rpc(endpoint, "tools/call", params, timeout=timeout)
 
 
-def fetch(url, out_path):
+def fetch(url, out_path, timeout=TIMEOUT):
     req = urllib.request.Request(url, method="GET")
     try:
-        with opener().open(req, timeout=TIMEOUT) as resp:
+        with opener().open(req, timeout=timeout) as resp:
             data = resp.read()
     except urllib.error.HTTPError as exc:
         raise SystemExit("HTTP %d fetching %s: %s"
@@ -132,23 +132,27 @@ def main():
     ap.add_argument("--list", action="store_true", help="shortcut for --method tools/list")
     ap.add_argument("--fetch", help="fetch a blob URL instead of calling MCP")
     ap.add_argument("--out", help="where --fetch writes the bytes")
+    ap.add_argument("--timeout", type=float, default=TIMEOUT,
+                    help="seconds before giving up (default %d)" % int(TIMEOUT))
     ap.add_argument("--raw", action="store_true", help="print the raw HTTP body")
     args = ap.parse_args()
 
     if args.fetch:
-        return fetch(args.fetch, args.out)
+        return fetch(args.fetch, args.out, timeout=args.timeout)
 
     if not args.endpoint:
         raise SystemExit("--endpoint is required (run discover.py to get it)")
 
     if args.info:
-        status, body = call_tool(args.endpoint, "device/info", None)
+        status, body = call_tool(args.endpoint, "device/info", None, args.timeout)
     elif args.tool:
-        status, body = call_tool(args.endpoint, args.tool, read_json_arg(args.args))
+        status, body = call_tool(args.endpoint, args.tool, read_json_arg(args.args),
+                                 args.timeout)
     elif args.method:
-        status, body = rpc(args.endpoint, args.method, read_json_arg(args.params))
+        status, body = rpc(args.endpoint, args.method, read_json_arg(args.params),
+                            timeout=args.timeout)
     elif args.list:
-        status, body = rpc(args.endpoint, "tools/list")
+        status, body = rpc(args.endpoint, "tools/list", timeout=args.timeout)
     else:
         raise SystemExit("nothing to do: pass --info / --list / --tool / --method / --fetch")
 

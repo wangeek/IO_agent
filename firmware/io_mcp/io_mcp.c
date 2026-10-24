@@ -278,7 +278,17 @@ static int blob_store(const char *file, const char *tag)
 static cJSON *observe_snapshot(const char *file, const char *tag)
 {
     cJSON *o = cJSON_CreateObject();
+    const int64_t t0 = esp_timer_get_time();
     const int idx = blob_store(file, tag);
+    const int64_t dt_ms = (esp_timer_get_time() - t0) / 1000;
+    /*
+     * 慢读打点:读盘是从 FAT 簇链上拷到 PSRAM,正常是毫秒级。
+     * 一旦超过 500 ms 就说明有异常(簇链走得太远、或者内存被换出),
+     * 打出来才能在串口日志里对上"observe 卡住"这类现象。
+     */
+    if (dt_ms > 500) {
+        ESP_LOGW(TAG, "observe %s took %lld ms", file, (long long)dt_ms);
+    }
     if (idx < 0) {
         cJSON_AddBoolToObject(o, "ok", false);
         cJSON_AddStringToObject(o, "file", file);
@@ -868,6 +878,9 @@ static cJSON *build_tools_list(void)
         cJSON_AddItemToObject(p, "macro", tool_schema_str("focus_reset | selftest | launch_watcher | ime_toggle"));
         cJSON_AddItemToObject(p, "ime", tool_schema_str("'toggle' with macro=launch_watcher: press Shift once before typing (for hosts whose IME is in Chinese mode; default = do not press it)"));
         cJSON_AddItemToObject(p, "hold_ms", tool_schema_num("key hold time, default 60"));
+        cJSON_AddItemToObject(p, "per_char_ms", tool_schema_num(
+            "per-character hold time in action=type, default 60 (IME needs >= 60 ms "
+            "or the input comes out garbled)"));
         add_tool(tools, "act",
                  "Inject ONE action on the host. Single execution, never retried. "
                  "Long actions (macro / long text) are accepted and run in background: "
@@ -880,7 +893,9 @@ static cJSON *build_tools_list(void)
     }
     {
         cJSON *p = cJSON_CreateObject();
-        cJSON_AddItemToObject(p, "target", tool_schema_str("preview | full | roi | diff"));
+        cJSON_AddItemToObject(p, "target", tool_schema_str(
+            "preview | full | roi | diff, or any 8.3 filename on the volume "
+            "(e.g. INJ.TXT, CAP.TXT) to read that file back"));
         add_tool(tools, "observe",
                  "Read a snapshot file from the host's RAM disk and return a URL for "
                  "the raw bytes. The device never decodes or compares images.",
@@ -1091,8 +1106,15 @@ static void http_drain_body(httpd_req_t *req)
 /* Host / Origin 检查(GET 端点也要 —— /blob 装的是桌面帧) */
 static bool http_guard_host_origin(httpd_req_t *req)
 {
+    /*
+     * 缓冲放 static 而不是栈上:httpd 是**单 task**,同一时刻只有一个请求在跑,
+     * 静态缓冲不会有并发问题。而 httpd 任务的栈只有几 KB(见下面的 stack_size),
+     * 每个请求路径都省一点栈是有意义的。
+     */
+    static char host[160];
+    static char origin[192];
+
     /* 1) Host 必须是我们自己 */
-    char host[160];
     const bool have_host = req_header(req, "Host", host, sizeof(host));
     if (!have_host || !host_is_ours(host)) {
         ESP_LOGW(TAG, "reject: Host not allowed (%s)", have_host ? host : "(none)");
@@ -1102,7 +1124,6 @@ static bool http_guard_host_origin(httpd_req_t *req)
     }
 
     /* 2) Origin(如果有)必须也是我们自己 */
-    char origin[192];
     if (req_header(req, "Origin", origin, sizeof(origin)) && origin[0] &&
         !origin_is_ours(origin)) {
         ESP_LOGW(TAG, "reject: cross-origin request (%s)", origin);
@@ -1121,7 +1142,7 @@ static bool http_guard_request(httpd_req_t *req)
     }
 
     /* 3) Content-Type 必须是 application/json */
-    char ct[64];
+    static char ct[64];
     if (!req_header(req, "Content-Type", ct, sizeof(ct)) || !content_type_is_json(ct)) {
         ESP_LOGW(TAG, "reject: bad Content-Type (%s)", ct[0] ? ct : "(none)");
         http_drain_body(req);
@@ -1514,6 +1535,14 @@ esp_err_t io_mcp_start(void)
     cfg.server_port = IO_MCP_PORT;
     cfg.max_uri_handlers = 6;
     cfg.lru_purge_enable = true;
+    /*
+     * stack_size:IDF 默认 4096。httpd 是**单 task**,handler 的调用链
+     * (httpd 自己的帧 + 我们的加固 + cJSON 解析/打印 + observe 的读盘)
+     * 全在这一个栈上。observe 读一个"已存在"的文件时崩过
+     * (Guru Meditation / LoadProhibited,回溯被冲垮 ⇒ 栈被写坏),
+     * 给到 8192 留出余量。
+     */
+    cfg.stack_size = 8192;
     /*
      * recv_wait_timeout:IDF 默认 5 秒,这里压到 2 秒。
      *

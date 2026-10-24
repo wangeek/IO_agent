@@ -75,7 +75,7 @@ Read these fields and stop early if they are wrong:
 | `usb.suspended` | host suspended the USB link | `true` ⇒ wake it; injection silently does nothing |
 | `hid.endpoint_ready` | the HID endpoint is being polled | `false` ⇒ the target machine is not reading input |
 | `busy` | an action is running right now | `true` ⇒ wait and re-poll; do **not** queue work |
-| `led` | 0 ready / 1 booting / 2 net down / 3 acting / 4 fault | 4 ⇒ the last injection self-test failed, the "hand" is broken |
+| `led` | 0 ready / 1 booting / 2 network not ready / 3 acting / 4 fault | priority 3 > 4 > 1 > 2 > 0: you will only ever see one value. `4` means the last injection self-test failed — the "hand" is broken. |
 
 ### 3. See the screen (read-only)
 
@@ -98,10 +98,24 @@ python scripts/mcp_call.py --fetch <url> --out frame.jpg
 (`SNAP_R.JPG`), `diff` (returns `DIFF.IDX` as **text**, not an image), or any
 8.3 filename on the volume (e.g. `INJ.TXT`, `CAP.TXT`) to read it back.
 
-If `watcher/status` says `running:false`, the watcher is not up. Starting it
-requires **injecting a command into the target machine** — that is a
-destructive step, so get the user's go-ahead first, then follow
-`references/injection-playbook.md`.
+Two things that bite here:
+
+- **Fetch the frame before the next `observe`.** The device keeps only 4 frame
+  slots and reuses them in a ring, so the next `observe` overwrites the one you
+  were given a URL for. Fetch → then observe again.
+- **Then actually look at the frame.** A saved JPEG is not a result — pass it to
+  your image-reading capability and describe what is on the screen. "I saved
+  frame.jpg" is not an answer to "what is on that screen".
+
+If `watcher/status` says `running:false`, the watcher is not up. There are two
+ways to start it, and only one of them touches the target machine:
+
+- **Ask the user to start it by hand** on the target machine — run the
+  `WATCH.PS1` slot file that the dongle exposes as a drive. This is the
+  preferred option when injection is not authorised, and it is also what you
+  should suggest when the user has not been told that observation needs the
+  watcher.
+- **Inject the launch command** — that is a destructive step (see step 4).
 
 ### 4. Act on the target machine (destructive)
 
@@ -120,7 +134,10 @@ version:
   live machine are how accounts get locked out.
 - **Probe the input mode before typing.** On a Chinese-locale Windows the
   injected text comes out as garbage. Send `act macro=selftest` and check
-  whether `INJ.TXT` appears; only type after the probe passes.
+  whether `INJ.TXT` appears; only type after the probe passes. Note that
+  `macro=launch_watcher` does **not** probe by itself — the probe is a separate
+  `macro=selftest` call, and its two jobs are to learn the current input mode
+  and to prove that keystrokes still reach the host at all.
 - **Long actions are asynchronous.** `macro=*` and `type` of more than 16
   characters come back as `{"accepted":true,"busy":true}` and finish in the
   background. Poll `device/info` until `busy` is `false`, then read the marker
@@ -167,6 +184,8 @@ Everything else (schemas, response fields, error codes, request rules) is in
 | `led:4` | last injection self-test failed | the target machine likely blocked or the USB link dropped — re-check `--info` |
 | `observe` returns `ok:false, note:"file not on the volume"` | watcher not running, or the device rebooted (RAM disk is rebuilt on every boot) | `watcher/status`; if the device rebooted, the watcher must be started again |
 | injected text comes out as Chinese/garbled | the target's IME was in Chinese mode | run the selftest probe; if it fails, send `macro=ime_toggle` and probe again |
+| the device stops answering HTTP but `discover.py` still finds it | the dongle rebooted (a crash or a power event); mDNS and WiFi come back before HTTP does | re-run `--info`; `uptime_s` dropping to a small number means it rebooted. If it stays dead, the dongle needs a physical replug |
+| every call times out but mDNS still works | the device's HTTP server is busy with one slow request | the device serves one request at a time; wait for it rather than piling on more calls |
 
 ## Examples
 
@@ -214,9 +233,12 @@ Reliable forms, in order of preference:
 
 1. Put the JSON in a file and pass `@file`:
    ```powershell
-   '{"target":"preview"}' | Set-Content -Encoding UTF8 args.json
+   [System.IO.File]::WriteAllText("$env:TEMP\args.json", '{"target":"preview"}', (New-Object System.Text.UTF8Encoding($false)))
    python mcp_call.py --endpoint $EP --tool observe --args '@args.json'
    ```
+   Note the explicit `UTF8Encoding($false)`: `Set-Content -Encoding UTF8` writes a
+   **BOM**, which older JSON readers reject. (`mcp_call.py` now tolerates a BOM,
+   but other tools you hand the same file to may not.)
 2. Escape the quotes as `\"` (shown above).
 3. Use `--%` before the script name.
 
@@ -225,5 +247,10 @@ Also on Windows: the dongle is on the LAN, so **any** configured HTTP proxy
 bypasses proxies on purpose — if you write your own HTTP code, do the same
 (`ProxyHandler({})` in Python, or `--noproxy '*'` in curl).
 
-The scripts need Python 3 (standard library only). Run them with `python` or
-`py` on Windows, `python3` on macOS/Linux.
+The scripts need Python 3 (standard library only). Run them with `python`; on
+macOS/Linux that is usually `python3`.
+
+`mcp_call.py` waits 30 s per call by default (`--timeout` to change it). The
+device is a single-task HTTP server, so a call that is already slow will not
+get faster by waiting longer — treat a timeout as "the device is busy or gone",
+not as "retry harder".

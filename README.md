@@ -75,6 +75,7 @@
 | P8b | watcher 存活信号的假阴性 | `watcher/status` 靠盘上的 `CAP.TXT` 判定 watcher 在不在,但 **CAP.TXT 是 watcher 启动时写一次的** —— 设备重启后 RAM disk 重建 → CAP.TXT 没了 → `watcher/status` 报"没在跑",**而 watcher 其实还在跑**(它只在启动时写 CAP.TXT)。需要一个不依赖一次性文件的存活判据(如帧序号是否在推进) |
 | P9 | Windows 旧设备实例 | `pnputil /remove-device` 报 Access denied(需管理员),旧的 Error 实例仍在(不影响新实例) |
 | P10 | 协议层主机侧单测 | 目前没有本地 unit test,每次验证都得烧板或跑实板脚本 |
+| P11 | 🔴 **`observe` 读已存在文件会让设备 panic 重启**(2026-10-23 由 skill eval 的真实 agent 撞出来) | `observe` 读一个**存在**的文件(哪怕是宿主刚写的 21 字节文件)→ 设备 `Guru Meditation / LoadProhibited`(EXCVADDR=0x45,回溯被冲垮 ⇒ httpd 任务栈被写坏)→ **软件复位重启** → MCP 端点整个消失;读**不存在**的文件则 0.2 秒正常返回。两条路径只差 `blob_store → io_disk_read_file` 这一步。httpd 任务栈是 IDF 默认的 **4096 字节**,而 handler 链(加固缓冲 + cJSON + 读盘)都在这一个栈上。**源码侧已改**:栈提到 8192、加固缓冲挪到 static、observe 慢读打点、tool schema 补 `per_char_ms` 与"任意 8.3 文件名"。**但尚未编译验证** —— 本机 Windows Code Integrity(Smart App Control / WDAC "Enterprise signing level",Policy `{0283ac0f-…}`)拦了 Espressif 工具链的 `objdump.exe`,IDF 生成链接脚本那一步跑不了。复现脚本:`tools/observe_hang_probe.py` |
 
 ## 已知硬约束
 
