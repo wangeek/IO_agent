@@ -77,6 +77,7 @@
 | P9 | Windows 旧设备实例 | `pnputil /remove-device` 报 Access denied(需管理员),旧的 Error 实例仍在(不影响新实例) |
 | P10 | 协议层主机侧单测 | 目前没有本地 unit test,每次验证都得烧板或跑实板脚本 |
 | P11 | ✅ **已修并真机验证(2026-10-24)**:读已存在文件曾让设备 panic 重启 | 2026-10-23 由 skill eval 的真实 agent 撞出来:读一个**存在**的文件(哪怕是宿主刚写的 21 字节文件)→ 设备 `Guru Meditation / LoadProhibited`(EXCVADDR=0x45,回溯被冲垮 ⇒ httpd 任务栈被写坏)→ **软件复位重启** → MCP 端点整个消失;读**不存在**的文件则 0.2 秒正常返回。httpd 任务栈是 IDF 默认的 **4096 字节**,而 handler 链(加固缓冲 + cJSON + 读盘)都在这一个栈上。**修法**:栈提到 8192、加固缓冲挪到 static、读盘缓冲也挪到 static、慢读打点。**验证**:回归脚本 `tools/read_hang_probe.py` —— 宿主现写的 21 B 文件、槽位里的 134 B 文件都是 0.2 s 内正常返回,设备存活、串口无崩溃日志。⚠ 期间本机的 Windows Code Integrity 拦了 Espressif 工具链的 `objdump.exe`(IDF 生成链接脚本那一步要调它),**关掉 Smart App Control / UAC 后已解封**,不需要改 IDF 工具链 |
+| P12 | ❌ **否决(2026-10-24)**:设备端 `wait` 工具(阻塞等动作跑完) | 设计做完了、评估后**不做**。它要解决的问题是"agent 拿长动作终态要轮询 9~31 次 `status`"。**否决理由(三条,都是架构级的)**:① **它要独占设备唯一的 httpd task 最长 20 秒** —— P1-B 刚为了"注入时眼是睁着的"把长动作挪到 worker task,`wait` 等于把那个洞挖回来;而且两个 task 优先级相同(都=5),等待循环**必须 `vTaskDelay` 让出 CPU**,忙等会饿死 worker → 动作永远跑不完 → 自己把自己锁死。② **给已稳定的 6 工具契约加第 7 个**,每个新工具对未来的 MCP 客户端/skill 都是一份兼容面。③ **它省的事不该由设备负责** —— "少写几次轮询"是客户端的事。**替代路径(零固件改动)**:轮询留在 agent 侧,设备端契约一个字都不动;需要时由 skill 的 `mcp_call.py` 之类客户端脚本包一层"轮询到 idle 为止",对 agent 来说仍是 1 步。**注**:不引入 job 状态机/轮询端点仍是硬约定(见 `docs/implementation-plan.md` 第 17 行),`status.busy` 就是给 agent 轮询用的 |
 
 ## 已知硬约束
 
