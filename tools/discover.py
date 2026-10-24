@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Find the IO_Agent device on the LAN via mDNS (no third-party dependencies).
+"""Find a Sophon device on the LAN via mDNS (no third-party dependencies).
 
 Why a bespoke resolver instead of the OS one:
 
@@ -21,7 +21,7 @@ Usage:
     python tools/discover.py                      # verbose, single shot
     python tools/discover.py --json               # machine readable, single shot
     python tools/discover.py --json --wait 20     # keep retrying for 20 s
-    python tools/discover.py --name ioagent-lab   # override device name
+    python tools/discover.py --name sophon-lab   # override device name
 
 Exit codes:
     0  device found (address + port resolved)
@@ -39,7 +39,7 @@ import time
 MDNS_ADDR = "224.0.0.251"
 MDNS_PORT = 5353
 DEFAULT_SERVICE = "_ioagent._tcp.local"
-DEFAULT_NAME = "ioagent-lab"
+DEFAULT_NAME = "sophon-lab"
 
 TYPES = {
     1: "A",
@@ -326,7 +326,7 @@ def resolve(records, device, service):
 # ---------------------------------------------------------------- main
 
 def main():
-    ap = argparse.ArgumentParser(description="Find the IO_Agent device via mDNS")
+    ap = argparse.ArgumentParser(description="Find the Sophon device via mDNS")
     ap.add_argument("--name", default=DEFAULT_NAME, help="device name in NVS")
     ap.add_argument("--service", default=DEFAULT_SERVICE, help="DNS-SD service type")
     ap.add_argument("--timeout", type=float, default=4.0, help="per-round listen time")

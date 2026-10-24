@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Find an IO_Agent dongle on the LAN and print its MCP endpoint.
+"""Find a Sophon dongle on the LAN and print its MCP endpoint.
 
 The dongle broadcasts itself over mDNS as "_ioagent._tcp.local"; the instance
-name is the device name (e.g. "ioagent-lab._ioagent._tcp.local") and the SRV
+name is the device name (e.g. "sophon-lab._ioagent._tcp.local") and the SRV
 record points at "<device-name>.local" with the MCP port.
 
 Two things this script exists to get right (both bite in the field):
@@ -21,7 +21,7 @@ Exit codes:
 Usage:
     python discover.py                       # print endpoint
     python discover.py --json                # machine readable
-    python discover.py --name ioagent-lab    # pick a device by name
+    python discover.py --name sophon-lab    # pick a device by name
     python discover.py --wait 30             # keep retrying for 30 s
 """
 
@@ -35,7 +35,7 @@ import time
 MDNS_ADDR = "224.0.0.251"
 MDNS_PORT = 5353
 DEFAULT_SERVICE = "_ioagent._tcp.local"
-DEFAULT_NAME = "ioagent-lab"
+DEFAULT_NAME = "sophon-lab"
 
 TYPES = {1: "A", 12: "PTR", 16: "TXT", 28: "AAAA", 33: "SRV", 255: "ANY"}
 
@@ -267,7 +267,7 @@ def resolve(records, device, service):
 # ------------------------------------------------------------------ main
 
 def main():
-    ap = argparse.ArgumentParser(description="Find the IO_Agent device via mDNS")
+    ap = argparse.ArgumentParser(description="Find the Sophon device via mDNS")
     ap.add_argument("--name", default=DEFAULT_NAME, help="device name (NVS 'name')")
     ap.add_argument("--service", default=DEFAULT_SERVICE, help="DNS-SD service type")
     ap.add_argument("--timeout", type=float, default=4.0, help="per-round listen time")

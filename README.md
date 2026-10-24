@@ -1,4 +1,8 @@
-# IO_Agent — ESP32 双向 I/O Agent
+# Sophon — AI Agent 的智子
+
+> **从潜空间抵达实体机器的眼与手。**
+> *The Sophon of AI Agents: eyes and hands reaching from latent space into
+> physical machines.*
 
 > 术语不熟先看 **[`docs/glossary.md`](docs/glossary.md)**(NVS / CDC / L0-L2 / SoftAP 等一律在那儿解释)。
 
@@ -15,26 +19,27 @@
 
 | 里程碑 | 状态 | 关键结论 |
 |---|---|---|
-| M0 环境与骨架 | ✅ | ESP-IDF v5.5.6 + 23/23 子模块双通道校验 + 固件编译/烧录通过(稀疏镜像 + 槽位化后 `io_agent.bin` 884,176 B) |
+| M0 环境与骨架 | ✅ | ESP-IDF v5.5.6 + 23/23 子模块双通道校验 + 固件编译/烧录通过(稀疏镜像 + 槽位化后 `sophon.bin` 884,176 B) |
 | M1 固件最小可枚举 | ✅ | 复合设备在 Windows 上同时枚举出 **键盘 + 鼠标 + 可移动磁盘**;E: 盘读写字节级一致;端点占用 3 个(IN 侧 2) |
 | M1 拔插不崩 | ✅ | 实测 ABSENT→PRESENT 完整循环:主机侧消失/重现,**固件侧无复位**(uptime 连续)、链路掉线/恢复均被观测到、重新枚举成功 |
 | T2 运行时下发(2026-10-22) | ✅ | 出厂镜像**不再内嵌** `watch.ps1`,只留 3 个设备管理槽 + 1 个宿主信箱(**槽位容量在固件里占 0 字节**);内容落 flash `script0`/`script1` A/B 快照(断电不丢),经 `PAYLOAD.BIN` 信箱下发(M5 后 MCP `update` 直接调同一 API)。**真源/副本契约:flash 是唯一真源(宿主够不到),RAM disk 槽位只在开机时铺开;运行期下发只写 flash** → 与宿主零竞争。实板双槽 A/B 验收 **17 项全绿** |
 | M2 注入链路(2026-10-23 复测) | ✅ | 设备端 HID 注入**端到端打通并客观验收**:远程 `input macro=selftest` → 设备走完注入序列 → 目标机执行命令把 `INJECT_OK` 写回盘 → 设备在盘上看到 `INJ.TXT`(`marker_seen:true`);再 `input macro=launch_watcher` → `CAP.TXT` 出现、watcher 起帧(~2.2 fps)、设备经 `/files/<name>` 回传**真实桌面帧**。US 布局表(95 字符)带自检 + 仓库内独立交叉校验脚本 `tools/check_us_layout.py`。**注入默认关**,只走远程显式触发(见决策表) |
 | M5 远程链路(2026-10-22) | ✅ | 设备侧 MCP server 落地(HTTP + JSON-RPC 2.0):`/mcp` + `/ping` + `/files/<name>`,6 个工具(`status`/`ls`/`read`/`capture`/`input`/`update`)。实测闭环:远程下发 → flash → 开机 overlay → 设备只读解析 → HTTP 回传 **sha256 逐字节一致**;`input(hotkey win+r)` 目标机窗口列表新增「运行」。凭据走 NVS + UART0 控制台配网(**不进仓库/不进固件**)。TLS-PSK 待做 |
-| M6 mDNS 发现(2026-10-23) | ✅ | 设备用 **lwIP 原生 mdns responder**(不引 esp-mdns,组件管理器关着也能离线复现)广播 `_ioagent._tcp.local`。宿主侧 `tools/discover.py` 自带解析器(`--json` 直接给 MCP 端点),实测从 `ioagent-lab.local` 解出 `172.17.21.225:8080`。**踩了两坑**:① mDNS 装配**必须在 TCP/IP 线程里做**(`sys_timeout` 定时器链表数据竞争 ⇒ 状态机卡在 PROBING ⇒ 注册成功但线上一个包都不发、也不应答);② 宿主侧**必须 `IP_ADD_MEMBERSHIP` 加入 224.0.0.251**,绑端口 ≠ 入组,AP 开着 IGMP snooping 时不入组就收不到组播应答 |
+| M6 mDNS 发现(2026-10-23) | ✅ | 设备用 **lwIP 原生 mdns responder**(不引 esp-mdns,组件管理器关着也能离线复现)广播 `_ioagent._tcp.local`。宿主侧 `tools/discover.py` 自带解析器(`--json` 直接给 MCP 端点),实测从 `sophon-lab.local` 解出 `172.17.21.225:8080`。**踩了两坑**:① mDNS 装配**必须在 TCP/IP 线程里做**(`sys_timeout` 定时器链表数据竞争 ⇒ 状态机卡在 PROBING ⇒ 注册成功但线上一个包都不发、也不应答);② 宿主侧**必须 `IP_ADD_MEMBERSHIP` 加入 224.0.0.251**,绑端口 ≠ 入组,AP 开着 IGMP snooping 时不入组就收不到组播应答 |
 | M8 对外接口改名(2026-10-24) | ✅ | 旧名**彻底替换**(不做兼容):工具集 5→6,全改成「一个动词 = 一件事」、全小写单词、零分隔符:`device/info`→`status`、`observe`→`read`(参数 `target`→`name`)、`act`→`input`、`deploy_payload`→`update`,新增 `ls`/`capture`;弃用 `output`/`write`/`type`;`watcher/status` 取消并进 `status.watcher.running`。端点统一:`GET /blob/b0..b3`→**`GET /files/<name>`**(按文件名取),新增 `GET /mcp`→**405**(规范要求)。MCP 原生 **ImageContent** 取代 blob URL;每个结果带 `structuredContent`/`outputSchema`/`title`;**`isError` 补齐到所有工具**,未知工具回 **-32602**。改名过程中撞出并修掉两个真机 bug(错误被塞进 `result`、通配 URI 默认不展开)。验收:`tools/contract_probe.py` **24 项全绿**。⚠ 随后又发现**第三个 bug**:本轮新增的 FAT16 mtime 解析把偏移量写成了 `0x24/0x26`(已越过目录项 32 字节,读到的是**下一个条目**),读出来是 1995 年的**合法**日期 —— 而"挑最新一帧"正是按 mtime 排的 ⇒ 挑帧逻辑一直错。已修为 `0x16/0x18`(FAT16 的最后写入时间/日期),回归 `tools/mtime_probe.py` **4 项全绿**(跨文件偏移恒定/变更可见/先后可排/`capture` 挑中最后写的帧) |
 | M7 MCP 接口硬化(2026-10-23) | ✅ | 请求路径硬化(P2)+ 协议细节(P4)一并落地:body 上限 128 KB → 413、`Content-Type` 非 JSON → 415、`Host`/`Origin` 绑定设备自己 → 403(防 DNS rebinding)、协议版本协商(支持 2024-11-05/2025-03-26/2025-06-18)、去掉假 session id(无状态,不发 `Mcp-Session-Id`)、通知回 202。**拒绝前先抽干 body**(带未读请求体关连接会发 RST,客户端只看到"连接被重置"而不是状态码)。验收:`tools/mcp_hardening_probe.py` **17 项全绿**,MCP 五工具与 mDNS 发现回归正常 |
 
 - **实板**:DevKitC-1-N16R8(Flash 16MB + Octal PSRAM 8MB,esptool 实测确认)。
 - **主机侧枚举**:`HID\VID_303A&PID_8001&MI_00&COL01`(HID Keyboard Device)、
   `&MI_00&COL02`(HID-compliant mouse)、`&MI_01`(USB Mass Storage Device)、
-  卷 `IOAGENT`(FAT / Removable / 4MB)。
+  卷 `SOPHON`(FAT / Removable / 4MB)。
 - **下一步**:M2 注入链路(键鼠动作序列本地定时执行)。
 
 ## 架构决策记录(已定,不重开)
 
 | 决策 | 结论 |
 |---|---|
+| 产品名(2026-10-24 定案) | **Sophon** —— *AI Agent 的智子:从潜空间抵达实体机器的眼与手。*(*The Sophon of AI Agents: eyes and hands reaching from latent space into physical machines.*)改名**只动人读层**:README / 文档 / skill / USB 描述符 / FAT 卷标(`SOPHON`) / 控制台提示符 / MCP `serverInfo.name` / 固件产物名(`sophon.bin`)/ 日志标签 / 设备默认名。**绑定层一律不动** —— NVS 命名空间 `"ioagent"`(改了读不到已存的 WiFi 配置)、mDNS 服务类型 `_ioagent._tcp.local`(线缆层标识,已部署的发现脚本依赖它)、USB VID/PID/序列号(序列号按**芯片 MAC** 填,Windows 靠它认设备实例)、`io_*` 模块名(内部代码标识,与产品名无关)。**实测**:改名后设备实例名从 `ioagent-lab` 变 `sophon-lab`(写 `DEV.CFG` 的 `name=`),mDNS 实例名要**重启**才更新(见下)|
 | 芯片 | ESP32-S3(唯一同时有 USB Device HID + USB Host/OTG 的主流型号;C3/C6 无 USB Device HID) |
 | USB 组合 | **HID + MSC 复合设备**,4/6 端点,剩 2 富余 |
 | HID 接口数 | **单 HID 接口 + 复合报告描述符**(Report ID 1=键盘 / 2=鼠标),不实现 HID OUT。**M1 实测已确认(2026-10-24)**:Windows **会**按报告描述符把单 HID 接口拆成两个集合 —— `MI_00&COL01`=HID Keyboard Device、`MI_00&COL02`=HID-compliant mouse,两个都独立可用。**原顾虑(以为只会枚举成一个 HID 设备)已推翻**,描述符方案成立 |
@@ -52,7 +57,7 @@
 | USB 链路活性判据 | **`tud_ready()` = `mounted && !suspended`**,不靠 `TINYUSB_EVENT_DETACHED`。**M1 实测确认(2026-10-24)**:ESP32-S3 的 USB 是 Synopsys DWC2 内核,TinyUSB 的 DWC2 device 模式**不实现设备断开检测**(`dcd_dwc2.c` 里 `GINTSTS_DISCINT` 仍是 TODO,唯一的 UNPLUGGED 来源 `GOTGINT_SEDET` 需要 OTG+VBUS 感知,devkit 没接)→ 物理拔线实际只上报 **SUSPEND**,`TINYUSB_EVENT_DETACHED` **永不触发**。实测拔线时 `mounted=1 suspended=1`,`tud_mounted()` 不会翻转,所以也不能用它。重新插上后主机发 SOF,SOF 处理器清掉 `suspended` → 链路自动恢复(实测 140 ms) |
 | 描述符 | 自写(TinyUSB 层),**不用 Arduino 便利库** — 后者常不实现 HID OUT 端点、且复合设备端点分配不受控(LED 已退出主路径,端点分配仍是硬理由) |
 | 构建/依赖 | **离线可复现**:esp_tinyusb 2.4.0 + tinyusb 0.21.0~2 **vendored** 到 `firmware/components/`,禁用 IDF 组件管理器(`set(ENV{IDF_COMPONENT_MANAGER} 0)`)。IDF 子模块用 `tools/fetch_idf_submodules.py` 走 **GitHub codeload tarball** 离线抓取并做逐文件 SHA-1 校验 —— 本机代理 `127.0.0.1:7897` 会随机截断 git smart-HTTP 与大文件,`git clone` 不可靠(vendored 组件的 3 处补丁见 `firmware/components/README-vendor-patches.md`) |
-| RAM disk 体积 | **出厂镜像用稀疏格式 + 槽位化(2026-10-22)**：卷容量由 BPB 声明(4MB),镜像文件只写到最后一个已用扇区(**97 扇区 / 49,664 B**),固件启动时在 PSRAM 开满 4MB 卷并把尾部补零 → 内嵌镜像 **4MB → 48KB**,`io_agent.bin` **约 4.42MB → 884,176 B**。宿主看到的仍是完整 4MB 可移动卷(实测 `size=4,144,640`),设备端依然零 FAT 逻辑。**"AI 现场就能生成的启动文件"不占固件位置** —— 出厂镜像只留薄引导槽:3 个设备管理槽(`WATCH.PS1` 32K / `AGENT.SH` 32K / `AGENT.EXE` 64K)+ 1 个宿主信箱(`PAYLOAD.BIN` 128K),**槽位簇从卷末尾往前分配**,簇链与目录项进镜像、**簇内容不进镜像** → 槽位容量在固件里占 **0 字节** |
+| RAM disk 体积 | **出厂镜像用稀疏格式 + 槽位化(2026-10-22)**：卷容量由 BPB 声明(4MB),镜像文件只写到最后一个已用扇区(**97 扇区 / 49,664 B**),固件启动时在 PSRAM 开满 4MB 卷并把尾部补零 → 内嵌镜像 **4MB → 48KB**,`sophon.bin` **约 4.42MB → 884,176 B**。宿主看到的仍是完整 4MB 可移动卷(实测 `size=4,144,640`),设备端依然零 FAT 逻辑。**"AI 现场就能生成的启动文件"不占固件位置** —— 出厂镜像只留薄引导槽:3 个设备管理槽(`WATCH.PS1` 32K / `AGENT.SH` 32K / `AGENT.EXE` 64K)+ 1 个宿主信箱(`PAYLOAD.BIN` 128K),**槽位簇从卷末尾往前分配**,簇链与目录项进镜像、**簇内容不进镜像** → 槽位容量在固件里占 **0 字节** |
 | Flash 分区 | `nvs`24K / `phy_init`4K / `otadata`8K / `ota_0` **2MB** / `ota_1` **2MB** / `script0`512K / `script1`512K / 余 10.9MB。OTA 双槽从 6MB 缩到 2MB(app 实占 **884,176 B**,余 1,212,976 B(57.8%);`script0/1` 是 T2 的运行时 payload 仓(A/B),断电不丢 |
 | watcher 启动 | **按卷标解析,不写死盘符(2026-10-22)**:dongle 拔线即断电,重入后盘符可能变。设备注入 `cmd /c for %d in (I O A G E N T) do @if exist %d:\WATCH.PS1 start "" powershell -ExecutionPolicy Bypass -WindowStyle Hidden %d:\WATCH.PS1`,注入后轮询 RAM disk 里的 `CAP.TXT` 判定拉起成功,未出现则 2s 间隔重试(最多 5 次)。**注入前必做 `focus_reset`(见下行「注入序列」)** |
 | 注入序列(2026-10-23 实测定案) | `Win+M` → `Win+R` → `Ctrl+A` → 打字 → `Enter`,每步之间 500ms。五个关键点:**① keycode 是 HID 用法 ID 不是 ASCII** —— 传 `'R'`(0x52)会按成小键盘的键,`Win+R` 根本不触发(这个 bug 让组合键从来没生效过);字母要用 `io_hid_keycode_for_letter()`。**② 组合键必须按住 ≥600ms** —— 30ms 会被 Windows 整段丢弃。**③ 单键必须按住 ≥60ms** —— 8ms 时微软拼音把输入打成乱码(`ni hao ` 变成 49 个"啊")。**④ 输入态由 IME 实例记忆,新开的运行框继承上一次的态**(不是回到注册表默认)。⇒ **没法盲发把态拨准**:Shift 是 toggle,盲按一次的结果取决于上一轮 ⇒ 历史上实测 OK/FAIL 交替;`Ctrl+Space` 在微软拼音里和 Shift 是**同一个开关**,按两次等于没切(同报告/先报修饰键两种发法都实测无效)。⇒ **改成"先测后打"**:`macro=selftest` 就是探针(它打的是自检命令,`INJ.TXT` 出现 = 当时是纯 ASCII ⇒ 当前是英文态;不出现 = 中文态);探针不过 → `macro=ime_toggle`(单按 Shift,只切态不输入字符)→ 再探针;然后 `macro=launch_watcher` 按探针结论选档:英文态用默认,**中文态加 `ime:"toggle"`**(新框继承中文 → Shift 一下 → 英文)。**设备端不自动重试**(注入是破坏性操作),重试由 agent 决定。**⑤ 运行框会预填历史命令**(且不是选中态) → 必须先 `Ctrl+A` 全选,否则我们的命令被追加在它后面变成废命令 |
@@ -100,7 +105,13 @@
 - **RAM disk 每次上电恢复出厂镜像**:内容随断电消失。dongle 形态拔线即断电 →
   任何运行时下发到 RAM 的内容都会丢,**需要留存的东西必须落 flash**(`script0`/`script1` 仓)。
 - **重入后盘符不保证复用**:dongle 重入是冷启动,Windows 可能分配到别的盘符 →
-  宿主侧按**卷标**定位(`IOAGENT`),设备侧注入的启动命令也按卷标解析(见决策表「watcher 启动」)。
+  宿主侧按**卷标**定位(`SOPHON`),设备侧注入的启动命令也按卷标解析(见决策表「watcher 启动」)。
+- **改设备名后 mDNS 实例名要重启才更新**:mDNS responder 只在开机时**装配一次**
+  (`mdns_resp_add_netif` + `mdns_resp_add_service` 用的是当时的设备名);改名走
+  `DEV.CFG` 的 `name=` → 写进 NVS → 重连 WiFi,而重连只**重新 announce**(IP 变了才需要),
+  **不重新注册服务名** ⇒ NVS 里已经是新名字、`/ping` 也报新名字,但 mDNS 还在广播旧实例名。
+  **改完名要重启设备**(或从串口 `name set <n>` 后重启)。这是"名称绑定层不动"策略的代价:
+  改的是人读的名字,动的是线缆层的注册。
 
 ## 目录
 

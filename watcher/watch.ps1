@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    IO_agent target-side watcher (v1). Zero-install, hidden, runs from the
+    Sophon target-side watcher (v1). Zero-install, hidden, runs from the
     virtual USB volume served by the ESP32-S3.
 
 .DESCRIPTION
@@ -24,7 +24,7 @@
     ASCII only: Windows PowerShell 5.1 reads .ps1 without a BOM as ANSI.
 
 .PARAMETER Root
-    Target volume root. Default: locate by volume label IOAGENT.
+    Target volume root. Default: locate by volume label SOPHON.
 
 .PARAMETER Iterations
     Number of capture cycles. 0 = run forever (production).
@@ -33,7 +33,7 @@
     Preview frame rate. Default 2.
 
 .PARAMETER Label
-    Volume label to search for. Default IOAGENT.
+    Volume label to search for. Default SOPHON.
 
 .PARAMETER LogPath
     Optional log file for diagnostics. Empty = no logging.
@@ -46,7 +46,7 @@ param(
     [string] $Root = '',
     [int]    $Iterations = 0,
     [double] $Fps = 2.0,
-    [string] $Label = 'IOAGENT',
+    [string] $Label = 'SOPHON',
     [string] $LogPath = ''
 )
 
@@ -147,7 +147,7 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
-public static class IoAgentNative {
+public static class SophonNative {
     [StructLayout(LayoutKind.Sequential)]
     public struct POINT { public int X; public int Y; }
     [DllImport("user32.dll")]
@@ -190,8 +190,8 @@ function Draw-CursorMarker {
        is several pixels wide in preview space, so at least one sample always
        falls inside it. #>
     param([System.Drawing.Bitmap] $Bmp)
-    $pt = New-Object IoAgentNative+POINT
-    if (-not [IoAgentNative]::GetCursorPos([ref] $pt)) { return }
+    $pt = New-Object SophonNative+POINT
+    if (-not [SophonNative]::GetCursorPos([ref] $pt)) { return }
     $bounds = Get-ScreenBounds
     # X and Y scale independently: the preview is 960x540 while the captured
     # desktop can be any aspect ratio (this host is 1536x960), so one ratio for
@@ -447,8 +447,8 @@ while ($true) {
     $full = $null
     try {
         $full = Capture-Screen
-        $prevCursor = New-Object IoAgentNative+POINT
-        [void] [IoAgentNative]::GetCursorPos([ref] $prevCursor)
+        $prevCursor = New-Object SophonNative+POINT
+        [void] [SophonNative]::GetCursorPos([ref] $prevCursor)
 
         $preview = Scale-Bitmap $full $PREVIEW_W $PREVIEW_H
         try {

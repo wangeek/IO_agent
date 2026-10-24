@@ -90,11 +90,11 @@ static char s_serial_str[24];
 
 static const char *s_str_desc[IO_USB_STR_COUNT] = {
     s_langid_bytes,          /* 0 */
-    "IO_Agent",              /* 1 Manufacturer */
-    "IO_Agent Composite",    /* 2 Product */
+    "Sophon",                /* 1 Manufacturer */
+    "Sophon Composite",      /* 2 Product */
     s_serial_str,            /* 3 Serial */
-    "IO_Agent HID",          /* 4 HID interface */
-    "IO_Agent Disk",         /* 5 MSC interface */
+    "Sophon HID",            /* 4 HID interface */
+    "Sophon Disk",           /* 5 MSC interface */
 };
 
 static const tusb_desc_device_t s_dev_desc = {
@@ -327,8 +327,8 @@ void tud_msc_inquiry_cb(uint8_t lun, uint8_t vendor_id[8], uint8_t product_id[16
     memset(vendor_id, ' ', 8);
     memset(product_id, ' ', 16);
     memset(product_rev, ' ', 4);
-    memcpy(vendor_id, "IOAGENT", 7);
-    memcpy(product_id, "IO_Agent Disk", 13);
+    memcpy(vendor_id, "SOPHON", 7);
+    memcpy(product_id, "Sophon Disk", 11);
     memcpy(product_rev, "1.0", 3);
 }
 

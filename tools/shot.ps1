@@ -6,7 +6,7 @@
 #   powershell -ExecutionPolicy Bypass -NoProfile -File tools\shot.ps1 out.png [maxWidth]
 
 param(
-    [string] $Out = 'D:\Lab\IO_agent\.stage\screen.png',
+    [string] $Out = (Join-Path $PSScriptRoot '..\.stage\screen.png'),
     [int]    $MaxWidth = 1280
 )
 

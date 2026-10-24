@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# IO_Agent M1 -- unplug / replug robustness check
+# Sophon M1 -- unplug / replug robustness check
 #
 # What it proves
 #   1. The USB device disappears from the host when the cable is removed.
@@ -40,7 +40,7 @@ $pnplog = Join-Path $logDirAbs ("unplug-pnp-" + $stamp + ".log")
 # apart from "reader never started".
 Set-Content -Path $serialLog -Value '' -Encoding ASCII
 
-Write-Host "=== IO_Agent unplug/replug check ==="
+Write-Host "=== Sophon unplug/replug check ==="
 Write-Host ("duration : waits up to " + [math]::Max($DurationSeconds, 600) + " s for a full unplug cycle")
 Write-Host ("serial   : " + $ComPort + "  -> " + $serialLog)
 Write-Host ("pnp      : " + $pnplog)

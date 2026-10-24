@@ -24,7 +24,7 @@ Checks, in order, each rule the device must enforce:
 
 Usage:
     python tools/mcp_hardening_probe.py 172.17.21.225
-    python tools/mcp_hardening_probe.py 172.17.21.225 --name ioagent-lab
+    python tools/mcp_hardening_probe.py 172.17.21.225 --name sophon-lab
 
 Exit codes: 0 = all rules pass, 1 = at least one rule failed, 2 = IO error
 """
@@ -170,7 +170,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("ip")
     ap.add_argument("--port", type=int, default=8080)
-    ap.add_argument("--name", default="ioagent-lab", help="device name in NVS")
+    ap.add_argument("--name", default="sophon-lab", help="device name in NVS")
     args = ap.parse_args()
 
     ip = args.ip

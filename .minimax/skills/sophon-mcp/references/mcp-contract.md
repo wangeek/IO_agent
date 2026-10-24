@@ -1,4 +1,4 @@
-# IO_Agent MCP contract
+# Sophon MCP contract
 
 Everything here is what the **device** actually implements. If a field is not
 listed here, do not assume it exists.
@@ -82,7 +82,7 @@ After `initialize`, send `MCP-Protocol-Version: 2025-06-18` on every request.
 Identity, link state, slot table, and whether the target's watcher is running.
 
 ```json
-{"ok":true,"device":"ioagent-lab","fw":"m2-remote","ip":"172.17.21.225",
+{"ok":true,"device":"sophon-lab","fw":"m2-remote","ip":"172.17.21.225",
  "wifi_connected":true,"uptime_s":54366,"sectors":8192,
  "usb":{"mounted":true,"suspended":false,"host_configured":true,"link_alive":true},
  "hid":{"endpoint_ready":true,"layout_ok":true},
@@ -245,7 +245,7 @@ laid down at boot. Do not expect a running script to change after an update.
 Plain JSON, not JSON-RPC:
 
 ```json
-{"ok":true,"device":"ioagent-lab","ip":"172.17.21.225","uptime_s":54366,"mcp":"2025-06-18"}
+{"ok":true,"device":"sophon-lab","ip":"172.17.21.225","uptime_s":54366,"mcp":"2025-06-18"}
 ```
 
 ## Error codes

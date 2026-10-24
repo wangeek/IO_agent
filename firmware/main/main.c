@@ -1,5 +1,5 @@
 /*
- * IO_Agent 固件入口
+ * Sophon 固件入口
  *
  * 职责分层:
  *   1. 把出厂的 FAT16 镜像装进 PSRAM RAM disk(设备端的"随身工具仓库")
@@ -27,7 +27,7 @@
 #include "io_net.h"
 #include "io_mcp.h"
 
-static const char *TAG = "io_agent";
+static const char *TAG = "sophon";
 
 /* 链路跃迁的轮询周期:要足够快,才能抓住"拔线 -> 等 3 秒 -> 插回"这种短窗口 */
 #define LINK_POLL_MS      200
@@ -132,7 +132,7 @@ static void status_task(void *arg)
 void app_main(void)
 {
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, " IO_Agent boot (ESP32-S3 N16R8)");
+    ESP_LOGI(TAG, " Sophon boot (ESP32-S3 N16R8)");
     ESP_LOGI(TAG, "========================================");
 
     ESP_ERROR_CHECK(io_disk_init());

@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# IO_Agent -- cold boot / power cycle re-entry check
+# Sophon -- cold boot / power cycle re-entry check
 #
 # Why this exists
 #   The dongle form factor has a SINGLE USB-A port: pulling the cable cuts
@@ -43,7 +43,7 @@
 param(
     [string]$ComPort = 'COM3',
     [string]$DeviceId = 'VID_303A&PID_8001',
-    [string]$Label = 'IOAGENT',
+    [string]$Label = 'SOPHON',
     [string]$LogDir = '.stage',
     [string]$MarkerName = 'CYCLE.MRK',
     [string]$ToolFile = 'WATCH.PS1',
@@ -119,7 +119,7 @@ function Get-FileHashHex {
     }
 }
 
-Write-Host "=== IO_Agent cold boot / power cycle check ==="
+Write-Host "=== Sophon cold boot / power cycle check ==="
 Write-Host ("device id        : " + $DeviceId)
 Write-Host ("serial (optional): " + $ComPort + "  -> " + $serialLog)
 Write-Host ("pnp              : " + $pnplog)

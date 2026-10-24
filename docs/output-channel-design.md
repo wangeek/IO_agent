@@ -54,7 +54,7 @@ v1(msc-watcher-protocol.md)假设数据在虚拟 U 盘上双向流动。物理�
   cmd /c for %d in (I O A G E N T) do @if exist %d:\WATCH.PS1 start "" powershell -ExecutionPolicy Bypass -WindowStyle Hidden %d:\WATCH.PS1
   ```
   **不写死盘符(2026-10-22 定案)**:dongle 形态拔线即整机断电,重入是冷启动,
-  Windows 可能分配到别的盘符。命令按**卷标**枚举候选盘符(`IOAGENT` 的每个字母),
+  Windows 可能分配到别的盘符。命令按**卷标**枚举候选盘符(`SOPHON` 的每个字母),
   `if exist` 命中即启动,只依赖 cmd 内建语法(不依赖 `Get-Volume` 之类的可选模块)。
 - **拉起成功判定(闭环)**:设备注入后轮询 RAM disk 里的 `CAP.TXT`(watcher 启动时写的
   能力自陈),出现即判定拉起成功;未出现则按 2s 间隔重试注入,最多 5 次。
@@ -88,7 +88,7 @@ v1(msc-watcher-protocol.md)假设数据在虚拟 U 盘上双向流动。物理�
 
 ### L0 兜底:硬件直采(二代 P4,远期)
 
-产品形态约束(2026-10-20 定调):**IO_agent 是一体化设备——一块即插即用的板子**,
+产品形态约束(2026-10-20 定调):**Sophon 是一体化设备——一块即插即用的板子**,
 不引入破坏一体化的外接配件堆。因此:
 
 - **产品内的硬件兜底/增强路线只有一条**:二代 P4 直采。架构:目标机 HDMI →

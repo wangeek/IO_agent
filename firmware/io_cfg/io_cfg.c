@@ -15,7 +15,7 @@
 
 static const char *TAG = "io_cfg";
 
-#define NVS_NS      "ioagent"
+#define NVS_NS      "ioagent"   /* 绑定层:改名会读不到已存的 WiFi 配置 */
 #define NVS_KEY_SSID "wifi_ssid"
 #define NVS_KEY_PASS "wifi_pass"
 #define NVS_KEY_PSK  "psk"
@@ -26,7 +26,7 @@ static const char *TAG = "io_cfg";
 #define PROV_FILE   "DEV.CFG"
 #define PROV_MAX    512
 
-static char s_name[IO_CFG_NAME_MAX] = "ioagent";
+static char s_name[IO_CFG_NAME_MAX] = "sophon";
 
 /* ------------------------------------------------------------------ */
 /* NVS 读写                                                            */
@@ -355,7 +355,7 @@ static void handle_line(char *line)
     if (!line[0]) {
         return;
     }
-    printf("ioagent> %s\n", line);
+    printf("sophon> %s\n", line);
 
     if (strcmp(line, "wifi scan") == 0) {
         print_wifi_scan();
@@ -396,9 +396,9 @@ static void console_task(void *arg)
     static char line[128];
     size_t len = 0;
 
-    printf("\n=== IO_Agent console ===\n");
+    printf("\n=== Sophon console ===\n");
     printf("commands: wifi scan | wifi set <ssid> [pass] | psk set <psk> | name set <n> | status\n");
-    printf("ioagent> ");
+    printf("sophon> ");
 
     for (;;) {
         uint8_t ch;
@@ -412,7 +412,7 @@ static void console_task(void *arg)
                 handle_line(line);
                 len = 0;
             }
-            printf("ioagent> ");
+            printf("sophon> ");
             continue;
         }
         if (ch == '\b' || ch == 127) {

@@ -54,7 +54,7 @@ find_package(Python3 COMPONENTS Interpreter REQUIRED)
 execute_process(
     COMMAND ${Python3_EXECUTABLE} "${MKFATIMG}"
             --out "${RAMDISK_OUT}"
-            --label IOAGENT
+            --label SOPHON
             --size 4M
             --reserve-slot "WATCH.PS1:${IO_SLOT_WATCH_PS1}"
             --reserve-slot "AGENT.SH:${IO_SLOT_AGENT_SH}"

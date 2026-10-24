@@ -48,7 +48,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-USER_AGENT = "IO_Agent-submodule-fetcher/1.0"
+USER_AGENT = "Sophon-submodule-fetcher/1.0"
 CODELOAD = "https://codeload.github.com/{owner}/{repo}/tar.gz/{sha}"
 API_COMMIT = "https://api.github.com/repos/{owner}/{repo}/git/commits/{sha}"
 API_TREE = "https://api.github.com/repos/{owner}/{repo}/git/trees/{sha}?recursive=1"

@@ -34,7 +34,7 @@ except ImportError:
     print("NO_PYSERIAL")
     sys.exit(3)
 
-LABEL = "IOAGENT"
+LABEL = "SOPHON"
 PORT = sys.argv[1] if len(sys.argv) > 1 else "COM3"
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PAYLOAD_SRC = os.path.join(REPO, "watcher", "watch.ps1")
@@ -64,7 +64,7 @@ def make_shell_body(run_id):
         "#!/bin/sh\n"
         "# T2 payload smoke test -- deployed into AGENT.SH by tools/verify_t2.py\n"
         "# t2-run {}\n"
-        'echo "io_agent payload ok"\n'
+        'echo "sophon payload ok"\n'
         "exit 0\n"
     ).format(run_id).encode("ascii")
 

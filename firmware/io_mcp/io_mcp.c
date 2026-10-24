@@ -1,5 +1,5 @@
 /*
- * io_mcp — 设备端 MCP server(Streamable HTTP + JSON-RPC 2.0)
+ * io_mcp — Sophon 设备端 MCP server(Streamable HTTP + JSON-RPC 2.0)
  *
  * 拓扑:设备是服务端,agent 主动连过来(mDNS: _ioagent._tcp.local)。
  *
@@ -53,7 +53,7 @@ static const char *TAG = "io_mcp";
 
 #define IO_MCP_PORT          8080
 #define IO_MCP_PROTO         "2025-06-18"
-#define IO_MCP_SERVER_NAME   "ioagent"
+#define IO_MCP_SERVER_NAME   "sophon"
 #define IO_MCP_SERVER_VER    "1.0.0"
 
 /*

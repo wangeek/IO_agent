@@ -71,7 +71,7 @@ def main():
     ser.close()
     text = "".join(out)
     sys.stdout.write(text)
-    if "ioagent>" in text:
+    if "sophon>" in text:
         print("\n[console] command acknowledged")
         return 0
     print("\n[console] no prompt seen in %.1fs" % wait)

@@ -4,7 +4,7 @@
  * 为什么不落明文:WiFi 密码和设备 PSK 属于凭据,**不进仓库、不进固件二进制**。
  * 它们只存在设备的 NVS 里,由串口命令(或后续的配网流程)写入。
  *
- * NVS 命名空间:"ioagent"
+ * NVS 命名空间:"ioagent"(**绑定层,不可改** —— 改了读不到已存的 WiFi 配置)
  *   wifi_ssid  WiFi SSID
  *   wifi_pass  WiFi 密码
  *   psk        设备 PSK(后续 TLS-PSK / 鉴权用)
@@ -51,7 +51,7 @@ esp_err_t io_cfg_set_psk(const char *psk);
  * 文件格式(行式,`key=value`,`#` 开头是注释):
  *     ssid=MyNetwork
  *     pass=secret123
- *     name=ioagent-lab
+ *     name=sophon-lab
  *
  * 幂等:文件内容的 CRC 记在 NVS 里,**同一份文件不会重复应用**
  * (所以运行时用 MCP 改了 WiFi 之后,盘上那份旧文件不会把它改回去)。
@@ -60,7 +60,7 @@ esp_err_t io_cfg_set_psk(const char *psk);
  */
 esp_err_t io_cfg_apply_provisioning_file(bool *changed);
 
-/** 设备名(默认 "ioagent")。 */
+/** 设备名(默认 "sophon")。 */
 const char *io_cfg_device_name(void);
 esp_err_t io_cfg_set_device_name(const char *name);
 

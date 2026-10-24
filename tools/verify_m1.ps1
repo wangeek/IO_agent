@@ -5,7 +5,7 @@
   Checks, in order:
     1. Enumeration : does Windows see the ESP32-S3 as a USB device at all?
                      Which device classes did it create?
-    2. Volume      : is there a FAT volume labelled IOAGENT? (found by label,
+    2. Volume      : is there a FAT volume labelled SOPHON? (found by label,
                      never by a hard-coded drive letter)
     3. Read/write  : write a file, read it back, compare bytes, delete it.
     4. Endpoints   : report the interfaces Windows bound, so they can be
@@ -29,7 +29,7 @@ $ErrorActionPreference = 'Continue'
 
 $VID       = 'VID_303A'
 $PID_HEX   = 'PID_8001'
-$VolumeLbl = 'IOAGENT'
+$VolumeLbl = 'SOPHON'
 $TestFile  = 'M1TEST.TXT'   # 8.3 short name: the FAT16 image has no LFN
 $Timeout   = 60
 
@@ -46,7 +46,7 @@ function Get-UsbDevice {
     return Get-PnpDevice -ErrorAction SilentlyContinue
 }
 
-Write-Output "IO_Agent M1 acceptance check"
+Write-Output "Sophon M1 acceptance check"
 Write-Output ("host: " + $env:COMPUTERNAME)
 
 if ($WaitSeconds -gt 0) {
@@ -109,7 +109,7 @@ Write-Output ("  HID node names     : " + ($hidNames -join ' | '))
 # ---------------------------------------------------------------------------
 # 2. volume
 # ---------------------------------------------------------------------------
-Write-Section "2. IOAGENT volume"
+Write-Section "2. SOPHON volume"
 
 $vol = Get-CimInstance Win32_LogicalDisk -ErrorAction SilentlyContinue |
        Where-Object { $_.VolumeName -eq $VolumeLbl }
@@ -133,7 +133,7 @@ Write-Output ("volume: " + $root + " label='" + $vol.VolumeName + "' size=" + $v
 Write-Section "3. read/write round trip"
 
 $target = $root + '\' + $TestFile
-$payload = "IO_AGENT_M1_WRITE_TEST_2026"
+$payload = "SOPHON_M1_WRITE_TEST_2026"
 $payloadBytes = [System.Text.Encoding]::ASCII.GetBytes($payload)
 
 try {

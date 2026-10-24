@@ -1,10 +1,12 @@
 ---
-name: io-agent-mcp
+name: sophon-mcp
 description: |
-  Drive an IO_Agent ESP32-S3 dongle over its MCP server: inject keyboard/mouse
-  into a remote Windows machine and read back what is on its screen. Use this
-  whenever the user wants to operate, watch, or automate a machine that has the
-  IO_Agent dongle plugged into it — phrases like "用 IO_Agent 控制那台机器",
+  Drive a Sophon ESP32-S3 dongle over its MCP server: inject keyboard/mouse
+  into a remote Windows machine and read back what is on its screen. Sophon
+  ("AI Agent 的智子") reaches from latent space into physical machines as
+  eyes and hands. Use this whenever the user wants to operate, watch, or
+  automate a machine that has the Sophon dongle plugged into it — phrases like
+  "用 Sophon 控制那台机器",
   "看这台机器的屏幕", "远程点一下那台电脑", "dongle 注入", "截那台机器的图",
   "the other PC", "remote desktop via the dongle". Covers device discovery over
   mDNS, the six MCP tools, and the injection discipline (single trigger, never
@@ -13,7 +15,7 @@ description: |
   for reading files on the local machine.
 ---
 
-# IO_Agent (MCP server on the dongle)
+# Sophon (MCP server on the dongle)
 
 ## The one thing to get right first
 
@@ -46,7 +48,7 @@ Naming rule: all six are **one lowercase verb, no separators**. `read` takes a
 
 ## Inputs to collect
 
-- **Device name** — the mDNS instance name, `ioagent-lab` by default. If the
+- **Device name** — the mDNS instance name, `sophon-lab` by default. If the
   user has more than one dongle, ask which one; `scripts/discover.py --name X`
   selects it.
 - **Permission to inject** — injecting keystrokes into a live machine is

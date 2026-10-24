@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""io_mcp_client -- 访问 IO_Agent 设备端 MCP server 的最小客户端。
+"""io_mcp_client -- 访问 Sophon 设备端 MCP server 的最小客户端。
 
 设备是**服务端**(Streamable HTTP + JSON-RPC 2.0),agent 主动连过去。
 本模块把"怎么调"这件事收在一处,各探针/脚本只关心"调什么"。

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Call the IO_Agent MCP server (or fetch a file) from the host.
+"""Call the Sophon MCP server (or fetch a file) from the host.
 
 Why this script exists instead of "just use curl":
 
@@ -179,7 +179,7 @@ def fetch(url, out_path, timeout=TIMEOUT):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="IO_Agent MCP client")
+    ap = argparse.ArgumentParser(description="Sophon MCP client")
     ap.add_argument("--endpoint", help="MCP endpoint, e.g. http://172.17.21.225:8080/mcp")
     ap.add_argument("--tool", help="call a tool by name (tools/call)")
     ap.add_argument("--args", help="tool arguments: JSON string or @file")

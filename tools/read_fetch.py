@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""read_fetch.py -- 把共享盘上的一个文件拉到本地。
+"""read_fetch.py -- 把 Sophon 共享盘上的一个文件拉到本地。
 
 现在设备是"按文件名取"的:
   - `read` 工具直接读盘上的文件(小文件内联,大的给 URL)

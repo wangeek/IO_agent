@@ -28,10 +28,10 @@ TIMEOUT = 12.0
 
 
 def find_volume():
-    """Find the IOAGENT volume by label (drive letters can change)."""
+    """Find the SOPHON volume by label (drive letters can change)."""
     if len(sys.argv) > 2:
         return sys.argv[2]
-    ps = ("Get-Volume | Where-Object { $_.FileSystemLabel -eq 'IOAGENT' } |"
+    ps = ("Get-Volume | Where-Object { $_.FileSystemLabel -eq 'SOPHON' } |"
           " Select-Object -First 1 -ExpandProperty DriveLetter")
     try:
         out = subprocess.run(["powershell", "-NoProfile", "-Command", ps],

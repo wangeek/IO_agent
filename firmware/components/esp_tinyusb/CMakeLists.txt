@@ -99,7 +99,7 @@ idf_build_get_property(build_components BUILD_COMPONENTS)
 if(tinyusb IN_LIST build_components)
     set(tinyusb_name tinyusb) # Local component
 elseif(NOT idf_component_manager)
-    # VENDOR PATCH (IO_Agent): the component manager is disabled and TinyUSB is
+    # VENDOR PATCH (Sophon): the component manager is disabled and TinyUSB is
     # vendored as a local component. BUILD_COMPONENTS is still empty during the
     # early-expansion pass (it is filled only while components are processed),
     # so the check above cannot see the local component yet.
@@ -134,7 +134,7 @@ idf_component_register(SRCS ${srcs}
                        )
 
 # Pass tusb_config.h from this component to TinyUSB
-# VENDOR PATCH (IO_Agent): target_include_directories is not a scriptable
+# VENDOR PATCH (Sophon): target_include_directories is not a scriptable
 # command, so it cannot run during IDF's early-expansion pass (CMake runs
 # that pass in script mode and aborts on non-scriptable commands).
 if(NOT CMAKE_SCRIPT_MODE_FILE)

@@ -271,6 +271,7 @@ esp_err_t io_net_start_mdns(uint16_t port)
      *
      * 作用:让 agent **不用配 IP 就能找到设备** —— 设备 IP 是 DHCP 分配的,
      * 重启/换网后会变。设备把 <设备名>.local 与服务类型 _ioagent._tcp.local
+     * (服务类型是**绑定层**,不随产品改名;产品名 Sophon 只影响人读的地方)
      * 广播出去,agent 解析出 IP:8080 就能连。
      *
      * 为什么用 lwIP 原生 responder:esp-mdns 在组件管理器里(与"关组件管理器 +

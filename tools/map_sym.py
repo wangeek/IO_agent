@@ -7,7 +7,7 @@ Usage: python tools/map_sym.py 0x4037f0a4 [more addresses...]
 import re
 import sys
 
-MAP = "firmware/build/io_agent.map"
+MAP = "firmware/build/sophon.map"
 
 SYM = re.compile(r"^\s*(0x[0-9a-fA-F]+)\s+(\S+)")
 

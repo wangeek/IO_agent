@@ -9,7 +9,7 @@ agent 连不上它,只有这条路。
 DEV.CFG 是行式 key=value:
     ssid=MyNetwork
     pass=secret123        # 可省略 -> 沿用设备里已有的密码;写 pass= 空 = 开放网络
-    name=ioagent-lab      # 可省略
+    name=sophon-lab      # 可省略
 
 用法:
     python tools/provision_wifi.py --ssid MyNetwork --pass secret
@@ -22,7 +22,7 @@ import os
 import sys
 import time
 
-LABEL = "IOAGENT"
+LABEL = "SOPHON"
 CFG_NAME = "DEV.CFG"
 
 
@@ -113,7 +113,7 @@ def main():
         print("need --ssid (or --show)")
         return 2
 
-    lines = ["# ioagent provisioning", "ssid=%s" % args.ssid]
+    lines = ["# sophon provisioning", "ssid=%s" % args.ssid]
     if args.password is not None:
         lines.append("pass=%s" % args.password)
     if args.name:

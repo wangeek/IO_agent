@@ -48,7 +48,7 @@ FAT16 硬约束:簇数必须落在 [4085, 65524],否则 Windows 不按 FAT16 挂
 
 用法:
     python tools/mkfatimg.py --out firmware/assets/ramdisk.img \
-        --label IOAGENT --size 4M \
+        --label SOPHON --size 4M \
         --reserve-slot WATCH.PS1:32768 \
         --reserve-inbox PAYLOAD.BIN:131072 \
         --emit-slot-table firmware/build/ramdisk_slots.h
@@ -103,7 +103,7 @@ def fat16_time(dt=None):
 
 
 class Fat16Image:
-    def __init__(self, size_bytes=4 * 1024 * 1024, label="IOAGENT", serial=None):
+    def __init__(self, size_bytes=4 * 1024 * 1024, label="SOPHON", serial=None):
         if size_bytes % SECTOR:
             raise Fat16Error("卷大小必须是扇区大小(512)的整数倍")
         self.total_sectors = size_bytes // SECTOR
@@ -518,7 +518,7 @@ def main():
     ap = argparse.ArgumentParser(description="生成/校验 FAT16 虚拟 U 盘镜像")
     ap.add_argument("--out", help="输出镜像路径")
     ap.add_argument("--verify", metavar="IMG", help="校验已有镜像")
-    ap.add_argument("--label", default="IOAGENT")
+    ap.add_argument("--label", default="SOPHON")
     ap.add_argument("--size", default="4M", help="卷大小,支持 K/M/G")
     ap.add_argument("--add", action="append", default=[],
                     metavar="SRC:DSTNAME", help="加入文件,可重复")

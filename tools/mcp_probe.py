@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-mcp_probe.py -- 对设备做裸 HTTP 构造访问(不依赖任何 MCP 客户端库)。
+mcp_probe.py -- 对 Sophon 设备做裸 HTTP 构造访问(不依赖任何 MCP 客户端库)。
 
 分两层验证:
   L1  HTTP 层:GET /ping —— 设备活着吗?能应答吗?

@@ -1,4 +1,4 @@
-# IO_agent 默认配置(S3 + N16R8)
+# Sophon 默认配置(S3 + N16R8)
 
 CONFIG_IDF_TARGET="esp32s3"
 
@@ -45,7 +45,7 @@ CONFIG_TINYUSB_HID_COUNT=1
 
 # MSC:故意保持 n!
 # 见 components/README-vendor-patches.md:esp_tinyusb 内置 MSC 层会占用
-# tud_msc_read10_cb 等 5 个回调的强符号,而 IO_agent 的介质是自建 PSRAM RAM disk,
+# tud_msc_read10_cb 等 5 个回调的强符号,而 Sophon 的介质是自建 PSRAM RAM disk,
 # 必须由 App 自己实现这 5 个回调。TinyUSB 的 MSC *类驱动* 由 vendor patch
 # (components/esp_tinyusb/include/tusb_config.h 里 CFG_TUD_MSC=1) 打开。
 CONFIG_TINYUSB_MSC_ENABLED=n

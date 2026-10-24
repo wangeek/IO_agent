@@ -65,7 +65,7 @@ esp_tinyusb 2.4.0 公开的建存储 API 只有三种介质：
 `storage_medium_t`（`include_private/msc_storage.h`）虽是私有头，但它的 `type` 字段是
 `const storage_medium_type_t` 且枚举只有 3 个值，**没有注册自定义介质的公开入口**。
 
-而 IO_agent 已冻结的设计是：
+而 Sophon 已冻结的设计是：
 
 - **设备端零 FAT 逻辑**（`docs/design-review.md` 结论 1：MSC 是块设备，Windows 自己
   负责 FAT；设备端只提供格式正确的 FAT16 块设备，FAT 正确性由 `tools/mkfatimg.py`
@@ -85,7 +85,7 @@ esp_tinyusb 2.4.0 公开的建存储 API 只有三种介质：
 副作用检查（已核实）：
 
 - `esp_tinyusb/usb_descriptors.c` 里的"默认复合描述符"会因 `CFG_TUD_MSC` 为真而包含
-  MSC 接口，但 IO_agent 自己提供 `full_speed_config` 静态描述符 blob，默认描述符
+  MSC 接口，但 Sophon 自己提供 `full_speed_config` 静态描述符 blob，默认描述符
   **不会被使用**（`descriptors_control.c:205-216` 优先取调用方传入的 blob）。
 - `esp_tinyusb/tinyusb_msc.h`、`msc_storage.h` 在 `CONFIG_TINYUSB_MSC_ENABLED=n` 时
   不会被包含。
@@ -103,7 +103,7 @@ esp_tinyusb 2.4.0 公开的建存储 API 只有三种介质：
  if(tinyusb IN_LIST build_components)
      set(tinyusb_name tinyusb) # Local component
 +elseif(NOT idf_component_manager)
-+    # VENDOR PATCH (IO_Agent): the component manager is disabled and TinyUSB is
++    # VENDOR PATCH (Sophon): the component manager is disabled and TinyUSB is
 +    # vendored as a local component. BUILD_COMPONENTS is still empty during the
 +    # early-expansion pass (it is filled only while components are processed),
 +    # so the check above cannot see the local component yet.

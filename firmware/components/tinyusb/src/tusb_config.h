@@ -158,8 +158,8 @@ extern "C" {
 #define CFG_TUD_CDC_EP_BUFSIZE      CONFIG_TINYUSB_CDC_EP_BUFSIZE
 
 // MSC Buffer size of Device Mass storage
-// [IO_agent vendor patch] CONFIG_TINYUSB_MSC_BUFSIZE is a Kconfig symbol that
-// only exists when CONFIG_TINYUSB_MSC_ENABLED=y. IO_agent runs the TinyUSB MSC
+// [Sophon vendor patch] CONFIG_TINYUSB_MSC_BUFSIZE is a Kconfig symbol that
+// only exists when CONFIG_TINYUSB_MSC_ENABLED=y. Sophon runs the TinyUSB MSC
 // class with an application-provided media backend (see CFG_TUD_MSC below), so
 // that Kconfig symbol is absent -> fall back to the ESP32-S3 default (512).
 #ifndef CONFIG_TINYUSB_MSC_BUFSIZE
@@ -265,12 +265,12 @@ ESP_STATIC_ASSERT(CFG_TUD_VENDOR_TX_BUFSIZE >= EP_SIZE_VENDOR, "Vendor TX buffer
 
 // Enabled device class driver
 #define CFG_TUD_CDC                 CONFIG_TINYUSB_CDC_COUNT
-// [IO_agent vendor patch] External-media MSC.
+// [Sophon vendor patch] External-media MSC.
 //
 // esp_tinyusb's built-in MSC layer (tinyusb_msc.c) owns tud_msc_read10_cb /
 // tud_msc_write10_cb / tud_msc_capacity_cb as *strong* symbols and only offers
 // SPI-flash / SD-MMC / esp_blockdev media (the last one needs IDF >= 6.0.4).
-// IO_agent serves a PSRAM RAM disk instead (see io_disk + io_usb), so:
+// Sophon serves a PSRAM RAM disk instead (see io_disk + io_usb), so:
 //
 //   - CONFIG_TINYUSB_MSC_ENABLED stays n  -> esp_tinyusb's tinyusb_msc.c and
 //     storage_spiflash.c / storage_sdmmc.c are NOT compiled, and its

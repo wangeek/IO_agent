@@ -3,7 +3,7 @@
 ESP-IDF 工程(用 `idf.py create-project` 生成,**不要手写骨架**)。
 
 ```bash
-idf.py create-project -p ../.. firmware   # 在 IO_agent 根目录执行
+idf.py create-project -p ../.. firmware   # 在 Sophon 根目录执行
 ```
 
 ## 模块划分(来自 `docs/implementation-plan.md` §一)
