@@ -46,6 +46,7 @@
 #include "io_hid.h"
 #include "io_launcher.h"
 #include "io_led.h"
+#include "io_lcd.h"
 #include "io_net.h"
 #include "io_log.h"
 #include "io_ota.h"
@@ -1148,10 +1149,54 @@ static io_tool_out_t tool_flash(const cJSON *args)
     return tool_out(o, false);
 }
 
+/*
+ * screen —— 把一段文字写到 dongle 自己那块 0.96 寸小屏上。
+ *
+ * 为什么需要这个工具:设备原来**只能回状态码(int)**,回不了"一句话"。
+ * 而"agent 侧回显"(屏的角色 C)要的就是自由文本下行通道 ——
+ * 没有它,agent 说什么都上不了屏。
+ *
+ * 这是**输出通道**,不是数据通道:屏幕在目标机那边,给人看的。
+ * 屏是只写的 + 背光常亮,所以"显示"= 往画布上画 + 推一次,
+ * 20 ms 内完成 ⇒ 内联做,不走 worker task(那套是给"注入"这种长动作用的)。
+ */
+static io_tool_out_t tool_screen(const cJSON *args)
+{
+    cJSON *o = cJSON_CreateObject();
+
+    if (!io_lcd_available()) {
+        cJSON_AddBoolToObject(o, "ok", false);
+        cJSON_AddStringToObject(o, "error",
+                               "this device has no display (CONFIG_SOPHON_LCD_ST7735 is off)");
+        return tool_out(o, true);
+    }
+
+    const cJSON *text = cJSON_GetObjectItem(args, "text");
+    if (!cJSON_IsString(text)) {
+        cJSON_AddBoolToObject(o, "ok", false);
+        cJSON_AddStringToObject(o, "error", "missing text");
+        return tool_out(o, true);
+    }
+
+    const int lines = io_lcd_print(text->valuestring, IO_LCD_WHITE, IO_LCD_BLACK);
+    if (lines < 0) {
+        cJSON_AddBoolToObject(o, "ok", false);
+        cJSON_AddStringToObject(o, "error", "display write failed");
+        return tool_out(o, true);
+    }
+
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddNumberToObject(o, "lines", lines);
+    cJSON_AddStringToObject(o, "note",
+                           "the on-device screen now shows this text. ASCII only "
+                           "(no Chinese): the panel is 160x80, which fits 26x10 cells "
+                           "of a 6x8 font. '\\n' starts a new line; longer lines wrap.");
+    return tool_out(o, false);
+}
+
 /* ------------------------------------------------------------------ */
 /* tools/list                                                           */
 /* ------------------------------------------------------------------ */
-
 /*
  * 数组型参数(元素是 string)。
  *
@@ -1348,6 +1393,21 @@ static cJSON *build_tools_list(void)
                             "check that the firmware build time changed. A bad image is "
                             "rejected and the current firmware keeps running.",
                             p, "url");
+        add_output_schema(t);
+    }
+    {
+        cJSON *p = cJSON_CreateObject();
+        cJSON_AddItemToObject(p, "text", tool_schema_str(
+            "text to show on the device's own 0.96\" screen (ASCII only, no Chinese)"));
+        cJSON *t = add_tool(tools, "screen", "Show text on the device's own small screen",
+                            "Write text to the 0.96\" ST7735S screen that is built into this "
+                            "dongle. This is the agent's downlink channel to the display: "
+                            "the person standing at the target machine can see what the "
+                            "agent is doing without reading the chat. ASCII only -- the "
+                            "panel is 160x80 (26x10 cells of a 6x8 font) and there is no "
+                            "Chinese glyph set. '\\n' starts a new line, longer lines wrap. "
+                            "Returns {\"ok\":true,\"lines\":N}.",
+                            p, "text");
         add_output_schema(t);
     }
     return tools;
@@ -1683,6 +1743,8 @@ static cJSON *dispatch_rpc(const cJSON *req)
             out = tool_update(targs);
         } else if (!strcmp(n, "flash")) {
             out = tool_flash(targs);
+        } else if (!strcmp(n, "screen")) {
+            out = tool_screen(targs);
         } else {
             /*
              * 未知工具是**协议错误**(规范:未知工具用 JSON-RPC error,

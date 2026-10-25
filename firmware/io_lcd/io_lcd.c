@@ -1,7 +1,9 @@
 /*
- * io_lcd — ST7735S(SPI,MODE0)驱动。硬件事实与依据见 include/io_lcd.h。
+ * io_lcd — ST7735S(SPI,MODE0)驱动 + 画布 + 文字渲染。
+ * 硬件事实与依据见 include/io_lcd.h。
  */
 #include "io_lcd.h"
+#include "io_lcd_font.h"
 
 #include <string.h>
 
@@ -15,10 +17,6 @@
 #include <esp_heap_caps.h>
 
 static const char *TAG = "io_lcd";
-
-/* 16 位色 */
-#define IO_LCD_RGB565(r, g, b) \
-    ((uint16_t)((((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | ((b) >> 3)))
 
 #if CONFIG_SOPHON_LCD_ST7735
 
@@ -43,6 +41,7 @@ static const char *TAG = "io_lcd";
 /* ---- ST7735S 命令 ---- */
 #define ST7735_SWRESET  0x01
 #define ST7735_SLPOUT   0x11
+#define ST7735_NORON    0x13
 #define ST7735_INVOFF   0x20
 #define ST7735_INVON    0x21
 #define ST7735_DISPON   0x29
@@ -74,7 +73,7 @@ static const char *TAG = "io_lcd";
 #define MADCTL_BGR      0x08
 #define MADCTL_MH       0x04
 
-/* 行缓冲:一次只搬一行,320 字节(横屏 160 像素)。省 PSRAM,也省 DMA 带宽。 */
+/* 行缓冲:一次只搬一行,320 字节(横屏 160 像素)。放内部 RAM(SPI DMA 用)。 */
 #define LCD_LINE_MAX    160
 #define LCD_LINE_BYTES  (LCD_LINE_MAX * 2)
 
@@ -84,7 +83,8 @@ static int      s_width  = IO_LCD_PANEL_W_PORTRAIT;
 static int      s_height = IO_LCD_PANEL_H_PORTRAIT;
 static int      s_colstart = 26;
 static int      s_rowstart = 1;
-static uint8_t *s_line;          /* 字节交换后的一行 */
+static uint16_t *s_fb;          /* 画布,PSRAM */
+static uint8_t *s_line;         /* 字节交换后的一行,内部 RAM */
 
 /* ------------------------------------------------------------------ */
 /* 底层:发命令 / 发数据                                              */
@@ -128,11 +128,18 @@ static esp_err_t lcd_data(const void *data, size_t len)
 /* ------------------------------------------------------------------ */
 
 /*
- * 序列取自厂商 demo 自带的 TFT_eSPI:
- *   ST7735_Init.h 里 Rcmd1(15 条)+ Rcmd2green(2 条),
- *   而 ST7735_Init.h 的分派处明确写着 GREENTAB160x80 走的就是这两张表:
- *       else if (tabcolor == INITR_GREENTAB160x80)
- *           commandList(Rcmd1); commandList(Rcmd2green);
+ * 序列取自厂商 demo 自带的 TFT_eSPI,ST7735_Init.h 里 GREENTAB160x80 的完整分派:
+ *
+ *     commandList(Rcmd1);            // 15 条
+ *     commandList(Rcmd2green);       // 2 条:CASET/RASET
+ *     writecommand(ST7735_INVON);    // ★ 160x80 这一档要"反色开"
+ *     commandList(Rcmd3);            // ★ 4 条:GMCTRP1/GMCTRN1/NORON/DISPON
+ *
+ * ★ 踩过的坑:只抄 Rcmd1 + Rcmd2green 是**不够的** ★
+ *   NORON(0x13) 和 DISPON(0x29) 在 Rcmd3 里,而 Rcmd3 很容易被漏掉 ——
+ *   结果是**面板从来没被打开过**:SPI 事务全部成功、驱动自检也"画完了",
+ *   但屏是全黑的、什么图案都没有。
+ *   ⇒ 判定"驱动跑通了"不能只看 SPI 返回值,**屏上有没有东西才算数**。
  *
  * Rcmd2green 把 GRAM 地址窗口设成 列 2..129 / 行 1..160,
  * 真正的可见区靠 colstart/rowstart 再偏一次(竖屏 26/1)。
@@ -145,7 +152,7 @@ typedef struct {
 } lcd_init_cmd_t;
 
 static const lcd_init_cmd_t s_init_seq[] = {
-    /* Rcmd1 —— 7735R 公共初始化 */
+    /* --- Rcmd1:7735R 公共初始化 --- */
     { ST7735_SWRESET, 0, 150, { 0 } },
     { ST7735_SLPOUT,  0, 500, { 0 } },
     { ST7735_FRMCTR1, 3,   0, { 0x01, 0x2C, 0x2D } },
@@ -161,9 +168,22 @@ static const lcd_init_cmd_t s_init_seq[] = {
     { ST7735_INVOFF,  0,   0, { 0 } },
     { ST7735_MADCTL,  1,   0, { 0xC0 | MADCTL_BGR } },
     { ST7735_COLMOD,  1,   0, { 0x05 } },
-    /* Rcmd2green —— 绿版(0.96 寸 80x160 属于这一档) */
+    /* --- Rcmd2green:绿版(0.96 寸 80x160 属于这一档) --- */
     { ST7735_CASET,   4,   0, { 0x00, 0x02, 0x00, 0x81 } },
     { ST7735_RASET,   4,   0, { 0x00, 0x01, 0x00, 0xA0 } },
+    /* --- 160x80 专属:反色开 --- */
+    { ST7735_INVON,   0,   0, { 0 } },
+    /* --- Rcmd3:gamma + ★ 开机(缺这两条屏就是全黑) --- */
+    { ST7735_GMCTRP1, 16,  0, { 0x02, 0x1C, 0x07, 0x12,
+                               0x37, 0x32, 0x29, 0x2D,
+                               0x29, 0x25, 0x2B, 0x39,
+                               0x00, 0x01, 0x03, 0x10 } },
+    { ST7735_GMCTRN1, 16,  0, { 0x03, 0x1D, 0x07, 0x06,
+                               0x2E, 0x2C, 0x29, 0x2D,
+                               0x2E, 0x2E, 0x37, 0x3F,
+                               0x00, 0x00, 0x02, 0x10 } },
+    { ST7735_NORON,   0,  10, { 0 } },
+    { ST7735_DISPON,  0, 100, { 0 } },
 };
 
 static esp_err_t lcd_run_init_seq(void)
@@ -205,16 +225,6 @@ static esp_err_t lcd_set_window(int x0, int y0, int x1, int y1)
     return ESP_OK;
 }
 
-/* 把一行像素写成"高字节在前"的 RGB565。 */
-static void lcd_pack_line(uint8_t *dst, const uint16_t *src, int n)
-{
-    for (int i = 0; i < n; i++) {
-        const uint16_t c = src[i];
-        dst[2 * i]     = (uint8_t)(c >> 8);
-        dst[2 * i + 1] = (uint8_t)(c & 0xFF);
-    }
-}
-
 /* ------------------------------------------------------------------ */
 /* 对外 API                                                            */
 /* ------------------------------------------------------------------ */
@@ -251,7 +261,10 @@ esp_err_t io_lcd_set_rotation(uint8_t rotation)
     ESP_RETURN_ON_ERROR(lcd_data(&madctl, 1), TAG, "MADCTL data");
     ESP_LOGI(TAG, "rotation %u -> %dx%d (colstart=%d rowstart=%d)",
              rotation & 3, s_width, s_height, s_colstart, s_rowstart);
-    return io_lcd_blank();
+    if (s_fb) {
+        memset(s_fb, 0, (size_t)s_width * s_height * 2);
+    }
+    return ESP_OK;
 }
 
 int io_lcd_width(void)
@@ -269,9 +282,14 @@ bool io_lcd_available(void)
     return s_ready;
 }
 
+uint16_t *io_lcd_fb(void)
+{
+    return s_fb;
+}
+
 esp_err_t io_lcd_fill_rect(int x, int y, int w, int h, uint16_t rgb565)
 {
-    if (!s_ready) {
+    if (!s_ready || s_fb == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
     /* 裁到可见区 */
@@ -282,45 +300,130 @@ esp_err_t io_lcd_fill_rect(int x, int y, int w, int h, uint16_t rgb565)
     if (w <= 0 || h <= 0) {
         return ESP_OK;
     }
-
-    ESP_RETURN_ON_ERROR(lcd_set_window(x, y, x + w - 1, y + h - 1), TAG, "window");
-
-    for (int i = 0; i < w; i++) {
-        s_line[2 * i]     = (uint8_t)(rgb565 >> 8);
-        s_line[2 * i + 1] = (uint8_t)(rgb565 & 0xFF);
-    }
-    for (int row = 0; row < h; row++) {
-        ESP_RETURN_ON_ERROR(lcd_data(s_line, (size_t)w * 2), TAG, "fill row");
+    for (int row = y; row < y + h; row++) {
+        uint16_t *line = s_fb + (size_t)row * s_width;
+        for (int col = x; col < x + w; col++) {
+            line[col] = rgb565;
+        }
     }
     return ESP_OK;
 }
 
-esp_err_t io_lcd_present(const uint16_t *pixels)
+int io_lcd_text(int x, int y, const char *s, uint16_t fg, uint16_t bg)
 {
-    if (!s_ready) {
+    if (!s_ready || s_fb == NULL || s == NULL) {
+        return -1;
+    }
+    int drawn = 0;
+    for (const char *p = s; *p; p++) {
+        const int cx = x + drawn * IO_LCD_FONT5X7_CELL_W;
+        if (cx >= s_width) {
+            break;
+        }
+        const unsigned char code = (unsigned char)*p;
+        const uint8_t *g = NULL;
+        if (code >= IO_LCD_FONT5X7_FIRST &&
+            code < IO_LCD_FONT5X7_FIRST + IO_LCD_FONT5X7_GLYPHS) {
+            g = io_lcd_font5x7[code - IO_LCD_FONT5X7_FIRST];
+        }
+        /*
+         * 字模是**列优先**:g[c] 是一列,它的 bit r 是第 r 行。
+         * 所以要按行取位(先定行,再定列),不是按列取位。
+         */
+        for (int r = 0; r < IO_LCD_FONT5X7_CELL_H; r++) {
+            const int py = y + r;
+            if (py < 0 || py >= s_height) {
+                continue;
+            }
+            uint16_t *line = s_fb + (size_t)py * s_width;
+            for (int c = 0; c < IO_LCD_FONT5X7_CELL_W; c++) {
+                const int px = cx + c;
+                if (px < 0 || px >= s_width) {
+                    continue;
+                }
+                const bool ink = (g != NULL) &&
+                                 (c < IO_LCD_FONT5X7_W) &&
+                                 (r < IO_LCD_FONT5X7_H) &&
+                                 ((g[c] >> r) & 1);
+                line[px] = ink ? fg : bg;
+            }
+        }
+        drawn++;
+    }
+    return drawn;
+}
+
+int io_lcd_print(const char *s, uint16_t fg, uint16_t bg)
+{
+    if (!s_ready || s_fb == NULL) {
+        return -1;
+    }
+    /* 清画布 */
+    memset(s_fb, 0, (size_t)s_width * s_height * 2);
+
+    const int cols = s_width / IO_LCD_FONT5X7_CELL_W;
+    const int rows = s_height / IO_LCD_FONT5X7_CELL_H;
+    int row = 0, col = 0;
+
+    if (s != NULL) {
+        for (const char *p = s; *p; p++) {
+            if (*p == '\n') {
+                row++;
+                col = 0;
+                if (row >= rows) {
+                    break;
+                }
+                continue;
+            }
+            if (col >= cols) {
+                row++;
+                col = 0;
+                if (row >= rows) {
+                    break;
+                }
+            }
+            char ch[2] = { *p, 0 };
+            io_lcd_text(col * IO_LCD_FONT5X7_CELL_W,
+                        row * IO_LCD_FONT5X7_CELL_H, ch, fg, bg);
+            col++;
+        }
+    }
+    io_lcd_flush();
+    return row + 1;
+}
+
+esp_err_t io_lcd_flush(void)
+{
+    if (!s_ready || s_fb == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (pixels == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    ESP_RETURN_ON_ERROR(lcd_set_window(0, 0, s_width - 1, s_height - 1), TAG, "window");
+    ESP_RETURN_ON_ERROR(lcd_set_window(0, 0, s_width - 1, s_height - 1),
+                        TAG, "window");
 
     for (int row = 0; row < s_height; row++) {
-        lcd_pack_line(s_line, pixels + (size_t)row * s_width, s_width);
-        ESP_RETURN_ON_ERROR(lcd_data(s_line, (size_t)s_width * 2), TAG, "present row");
+        const uint16_t *src = s_fb + (size_t)row * s_width;
+        for (int i = 0; i < s_width; i++) {
+            const uint16_t c = src[i];
+            s_line[2 * i]     = (uint8_t)(c >> 8);
+            s_line[2 * i + 1] = (uint8_t)(c & 0xFF);
+        }
+        ESP_RETURN_ON_ERROR(lcd_data(s_line, (size_t)s_width * 2), TAG, "flush row");
     }
     return ESP_OK;
 }
 
 esp_err_t io_lcd_blank(void)
 {
-    return io_lcd_fill_rect(0, 0, s_width, s_height, 0x0000);
+    if (!s_ready || s_fb == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    memset(s_fb, 0, (size_t)s_width * s_height * 2);
+    return io_lcd_flush();
 }
 
 esp_err_t io_lcd_selftest(void)
 {
-    if (!s_ready) {
+    if (!s_ready || s_fb == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
     static const uint16_t bars[8] = {
@@ -336,18 +439,18 @@ esp_err_t io_lcd_selftest(void)
     const int n = (int)(sizeof(bars) / sizeof(bars[0]));
     const int bw = s_width / n;
 
+    memset(s_fb, 0, (size_t)s_width * s_height * 2);
     for (int i = 0; i < n; i++) {
-        ESP_RETURN_ON_ERROR(io_lcd_fill_rect(i * bw, 0, bw, s_height, bars[i]),
-                            TAG, "bar %d", i);
+        io_lcd_fill_rect(i * bw, 0, bw, s_height, bars[i]);
     }
     /* 白边:偏移错位时会露出来,一眼能看出来 */
-    ESP_RETURN_ON_ERROR(io_lcd_fill_rect(0, 0, s_width, 1, 0xFFFF), TAG, "border top");
-    ESP_RETURN_ON_ERROR(io_lcd_fill_rect(0, s_height - 1, s_width, 1, 0xFFFF), TAG, "border bottom");
-    ESP_RETURN_ON_ERROR(io_lcd_fill_rect(0, 0, 1, s_height, 0xFFFF), TAG, "border left");
-    ESP_RETURN_ON_ERROR(io_lcd_fill_rect(s_width - 1, 0, 1, s_height, 0xFFFF), TAG, "border right");
+    io_lcd_fill_rect(0, 0, s_width, 1, 0xFFFF);
+    io_lcd_fill_rect(0, s_height - 1, s_width, 1, 0xFFFF);
+    io_lcd_fill_rect(0, 0, 1, s_height, 0xFFFF);
+    io_lcd_fill_rect(s_width - 1, 0, 1, s_height, 0xFFFF);
 
     ESP_LOGI(TAG, "selftest drawn (%dx%d, %d bars)", s_width, s_height, n);
-    return ESP_OK;
+    return io_lcd_flush();
 }
 
 esp_err_t io_lcd_init(void)
@@ -356,8 +459,8 @@ esp_err_t io_lcd_init(void)
         return ESP_OK;
     }
 
-    /* 行缓冲:320 字节,DMA 可用 */
-    s_line = heap_caps_malloc(LCD_LINE_BYTES, MALLOC_CAP_DMA);
+    /* 行缓冲:320 字节,内部 RAM(SPI DMA 要能访问) */
+    s_line = heap_caps_malloc(LCD_LINE_BYTES, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     if (s_line == NULL) {
         ESP_LOGE(TAG, "no memory for line buffer");
         return ESP_ERR_NO_MEM;
@@ -409,11 +512,28 @@ esp_err_t io_lcd_init(void)
 
     ESP_RETURN_ON_ERROR(lcd_run_init_seq(), TAG, "init sequence");
 
-    ESP_LOGI(TAG, "ST7735S ready: SCLK=%d MOSI=%d CS=%d DC=%d RST=%d @ %d Hz",
-             LCD_GPIO_SCLK, LCD_GPIO_MOSI, LCD_GPIO_CS, LCD_GPIO_DC,
-             LCD_GPIO_RST, LCD_SPI_HZ);
+    /* 旋转先定下来,画布尺寸才对 */
+    ESP_RETURN_ON_ERROR(io_lcd_set_rotation(CONFIG_SOPHON_LCD_ROTATION),
+                        TAG, "rotation");
 
-    return io_lcd_set_rotation(CONFIG_SOPHON_LCD_ROTATION);
+    /* 画布放 PSRAM(25.6 KB)—— 设备有 8 MB,内部 RAM 只有 512 KB,别抢 */
+    const size_t fb_bytes = (size_t)s_width * s_height * sizeof(uint16_t);
+    s_fb = heap_caps_malloc(fb_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (s_fb == NULL) {
+        s_fb = heap_caps_malloc(fb_bytes, MALLOC_CAP_8BIT);
+    }
+    if (s_fb == NULL) {
+        ESP_LOGE(TAG, "no memory for %u byte framebuffer", (unsigned)fb_bytes);
+        s_ready = false;
+        return ESP_ERR_NO_MEM;
+    }
+    memset(s_fb, 0, fb_bytes);
+
+    ESP_LOGI(TAG, "ST7735S ready: SCLK=%d MOSI=%d CS=%d DC=%d RST=%d @ %d Hz, %dx%d",
+             LCD_GPIO_SCLK, LCD_GPIO_MOSI, LCD_GPIO_CS, LCD_GPIO_DC,
+             LCD_GPIO_RST, LCD_SPI_HZ, s_width, s_height);
+
+    return ESP_OK;
 }
 
 #else /* !CONFIG_SOPHON_LCD_ST7735 */
@@ -425,9 +545,14 @@ esp_err_t io_lcd_set_rotation(uint8_t r)    { (void)r; return ESP_ERR_NOT_SUPPOR
 int      io_lcd_width(void)                 { return 0; }
 int      io_lcd_height(void)                { return 0; }
 bool     io_lcd_available(void)             { return false; }
+uint16_t *io_lcd_fb(void)                   { return NULL; }
+esp_err_t io_lcd_flush(void)                { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t io_lcd_fill_rect(int x, int y, int w, int h, uint16_t c)
 { (void)x; (void)y; (void)w; (void)h; (void)c; return ESP_ERR_NOT_SUPPORTED; }
-esp_err_t io_lcd_present(const uint16_t *p) { (void)p; return ESP_ERR_NOT_SUPPORTED; }
+int      io_lcd_text(int x, int y, const char *s, uint16_t fg, uint16_t bg)
+{ (void)x; (void)y; (void)s; (void)fg; (void)bg; return -1; }
+int      io_lcd_print(const char *s, uint16_t fg, uint16_t bg)
+{ (void)s; (void)fg; (void)bg; return -1; }
 esp_err_t io_lcd_blank(void)                { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t io_lcd_selftest(void)             { return ESP_ERR_NOT_SUPPORTED; }
 

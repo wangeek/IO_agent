@@ -9,7 +9,7 @@ description: |
   "用 Sophon 控制那台机器",
   "看这台机器的屏幕", "远程点一下那台电脑", "dongle 注入", "截那台机器的图",
   "the other PC", "remote desktop via the dongle". Covers device discovery over
-  mDNS, the seven MCP tools, and the injection discipline (single trigger, never
+  mDNS, the eight MCP tools, and the injection discipline (single trigger, never
   auto-retry, IME probe before typing). Do NOT use for generic remote control
   that does not go through this dongle, for building/flashing its firmware, or
   for reading files on the local machine.
@@ -32,7 +32,7 @@ you ──WiFi──▶ dongle ──USB HID──▶ target machine's keyboard+
 So "the target machine" and "the host you run on" are two different computers.
 The dongle is the only thing that bridges them.
 
-## The seven tools
+## The eight tools
 
 | tool | what it does | touches the target machine? |
 |---|---|---|
@@ -43,9 +43,15 @@ The dongle is the only thing that bridges them.
 | `input` | inject **one** action (keyboard / mouse / macro) | **yes** |
 | `update` | store a payload into a flash slot (effective at next boot) | no |
 | `flash` | replace the dongle's **own firmware** over WiFi (OTA) | no |
+| `screen` | write ASCII text to the dongle's own 0.96" screen (the person at the target machine sees it) | no |
 
-Naming rule: all seven are **one lowercase verb, no separators**. `read` takes a
-`name`; `input` takes an `action`; `update` takes a `slot`; `flash` takes a `url`.
+Naming rule: all eight are **one lowercase verb, no separators**. `read` takes a
+`name`; `input` takes an `action`; `update` takes a `slot`; `flash` takes a `url`;
+`screen` takes a `text`.
+
+`screen` is for making the dongle **visible to the human at the target machine**:
+short ASCII only (the panel is 160x80 = 26x10 cells of a 6x8 font, no Chinese),
+`\n` starts a new line. It replaces whatever was on the screen.
 
 `flash` is only for when the dongle is a single-Type-C unit plugged into the
 target machine — then there is no USB port left to flash it from a dev box, so

@@ -282,6 +282,29 @@ SHA256), switches the boot slot and reboots.
   the HID+MSC link to the target machine). With a dev board that still has a
   serial port, flashing over USB is simpler.
 
+### `screen` — show text on the dongle's own 0.96" screen
+
+| argument | type | notes |
+|---|---|---|
+| `text` | string | the text to show — required |
+
+```json
+{"ok":true,"lines":3,"note":"the on-device screen now shows this text. ..."}
+```
+
+Writes text to the **0.96" ST7735S screen built into the dongle**. This is the
+agent's downlink channel to the display: the person standing at the target
+machine sees what the agent is doing without reading the chat.
+
+- **ASCII only — no Chinese.** The panel is 160x80, i.e. 26x10 cells of a 6x8
+  font, and there is no CJK glyph set on the device.
+- `\n` starts a new line; longer lines wrap at the panel edge.
+- The screen replaces whatever was on it (the boot info screen included).
+- If the build has no display (`CONFIG_SOPHON_LCD_ST7735` off), the call
+  returns `isError:true` with `"this device has no display ..."`.
+- The backlight has **no control pin** on this board — it is hard-wired on.
+  "Blank" therefore means "draw black", not "turn the light off".
+
 ## `/ping`
 
 Plain JSON, not JSON-RPC:

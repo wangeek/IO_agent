@@ -3,8 +3,8 @@
 
 The contract this checks:
 
-  N1  tools/list returns exactly the seven verb tools
-      (status / ls / read / capture / input / update / flash)
+  N1  tools/list returns exactly the eight verb tools
+      (status / ls / read / capture / input / update / flash / screen)
   N2  no old tool name survives in the list
   N3  every tool has a title and an outputSchema
   N4  unknown tool                                  -> JSON-RPC error -32602
@@ -54,7 +54,8 @@ OLD_TOOL_NAMES = [
     "list", "cap",
 ]
 
-NEW_TOOL_NAMES = ["status", "ls", "read", "capture", "input", "update", "flash"]
+NEW_TOOL_NAMES = ["status", "ls", "read", "capture", "input", "update", "flash",
+                  "screen"]
 
 
 def raw_post(ip, port, path, body, headers, host=None):
@@ -204,7 +205,7 @@ def main():
         except (ValueError, KeyError):
             tools = []
     names = [t.get("name") for t in tools]
-    check("N1", "tools/list returns exactly the seven verb tools",
+    check("N1", "tools/list returns exactly the eight verb tools",
           sorted(names), sorted(NEW_TOOL_NAMES))
     stale = [n for n in OLD_TOOL_NAMES if n in names]
     check("N2", "no old tool name survives", stale, [])

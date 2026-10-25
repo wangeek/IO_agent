@@ -181,13 +181,28 @@ static void lcd_task(void *arg)
     }
     ESP_LOGI(TAG, "LCD ready: %dx%d", io_lcd_width(), io_lcd_height());
     /*
-     * 开机画一组彩条。
+     * 开机画一组彩条,挂 3 秒。
      *
-     * 屏的**角色**还没定(见 docs/screen-decision.md),而彩条是唯一能一眼
-     * 分清三件事的图案:红蓝有没有反(BGR 位错)、GRAM 偏移对不对(偏移错
-     * 会露出黑边)、旋转对不对(横竖反)。
+     * 彩条是唯一能一眼分清三件事的图案:红蓝有没有反(BGR 位错)、GRAM 偏移
+     * 对不对(偏移错会露出黑边)、旋转对不对(横竖反)。
+     * **"驱动跑通了"不能只看 SPI 返回值 —— 屏上有没有东西才算数。**
      */
     io_lcd_selftest();
+    vTaskDelay(pdMS_TO_TICKS(3000));
+
+    /*
+     * 然后换成常驻信息屏:站在目标机旁边的人能直接看见设备状态并抄走 IP。
+     * 等网络起来再画,好把 IP 填上。
+     */
+    for (int i = 0; i < 40 && !io_net_is_connected(); i++) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+    {
+        const char *ip = io_net_ip();
+        char buf[96];
+        snprintf(buf, sizeof(buf), "SOPHON\nIP %s", ip ? ip : "--");
+        io_lcd_print(buf, IO_LCD_WHITE, IO_LCD_BLACK);
+    }
     vTaskDelete(NULL);
 }
 
