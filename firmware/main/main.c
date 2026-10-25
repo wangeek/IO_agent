@@ -26,6 +26,7 @@
 #include "io_cfg.h"
 #include "io_net.h"
 #include "io_log.h"
+#include "io_led.h"
 #include "io_mcp.h"
 
 static const char *TAG = "sophon";
@@ -165,6 +166,19 @@ void app_main(void)
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, " Sophon boot (ESP32-S3 N16R8)");
     ESP_LOGI(TAG, "========================================");
+
+    /*
+     * 状态 LED 最早起来:它是**给人看的**(现场一眼看出"设备什么状态"),
+     * 所以要在连网之前就位 —— 启动阶段正好显示"蓝色快闪"。
+     * 编译期开关 CONFIG_SOPHON_LED_WS2812 关掉时这里什么都不做。
+     */
+    {
+        const esp_err_t lrc = io_led_init();
+        if (lrc != ESP_OK) {
+            ESP_LOGW(TAG, "status LED unavailable (%s) -- continuing",
+                     esp_err_to_name(lrc));
+        }
+    }
 
     ESP_ERROR_CHECK(io_disk_init());
     ESP_ERROR_CHECK(io_hid_init());

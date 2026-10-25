@@ -19,6 +19,8 @@
 #include <esp_app_format.h>
 #include <esp_http_client.h>
 
+#include "io_led.h"
+
 static const char *TAG = "io_ota";
 
 #define IO_OTA_TASK_STACK  6144
@@ -57,6 +59,7 @@ static void ota_fail(const char *fmt, ...)
     va_end(ap);
     ota_set_state("failed");
     s_busy = false;
+    io_led_busy_release();      /* 让 LED 回到真实状态(不是"一直在忙") */
     ESP_LOGE(TAG, "OTA failed: %s", s_info.error);
 }
 
@@ -72,6 +75,12 @@ static void ota_task(void *arg)
 
     /* 等 MCP 应答先落地(见 IO_OTA_ACK_DELAY_MS 的说明) */
     vTaskDelay(pdMS_TO_TICKS(IO_OTA_ACK_DELAY_MS));
+
+    /*
+     * OTA 也是一个长动作 ⇒ LED 应该显示"动作执行中"(蓝)。
+     * 它不走 io_mcp 的单例槽(有自己的 task),所以要自己推 busy。
+     */
+    io_led_busy_acquire();
 
     ESP_LOGI(TAG, "downloading %s", url);
 
@@ -266,6 +275,7 @@ static void ota_task(void *arg)
     s_labels_ok = false;      /* 标签变了,下次 status 重算 */
     ota_set_state("staged");
     s_busy = false;
+    io_led_busy_release();
     ESP_LOGI(TAG, "staged in %s, rebooting in %d ms", target->label, IO_OTA_REBOOT_DELAY_MS);
     vTaskDelay(pdMS_TO_TICKS(IO_OTA_REBOOT_DELAY_MS));
     ota_set_state("rebooting");

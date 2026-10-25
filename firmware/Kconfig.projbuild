@@ -1,0 +1,37 @@
+menu "Sophon hardware"
+
+    config SOPHON_LED_WS2812
+        bool "Drive an on-board WS2812 LED as a status signal"
+        default y
+        help
+            The status LED is an **optional debug signal**, not a data path
+            (see the README decision table "LED 语义"). Enable this to light
+            the on-board WS2812 of a DevKitC-1 (GPIO48) and show the device
+            state at a glance:
+
+              green solid        ready (network up, MCP serving)
+              blue fast blink    booting (just powered on, not connected yet)
+              yellow slow blink  network not ready
+              blue solid         an action is running
+              red solid          the last injection self-test failed
+
+            Turn this OFF for a production dongle whose LED pin is used for
+            something else (or which has no addressable LED at all).
+
+    config SOPHON_LED_GPIO
+        int "WS2812 data GPIO"
+        default 48
+        depends on SOPHON_LED_WS2812
+        help
+            DevKitC-1 (and the N16R8 variant) wires the on-board WS2812 to
+            GPIO48.
+
+    config SOPHON_LED_COUNT
+        int "Number of WS2812 pixels on the bus"
+        default 1
+        depends on SOPHON_LED_WS2812
+        help
+            All pixels of one strip must be driven in a single RMT transaction
+            (WS2812 latches per pixel, so a gap in the bit stream resets it).
+
+endmenu

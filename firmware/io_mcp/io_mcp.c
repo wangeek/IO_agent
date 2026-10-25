@@ -45,6 +45,7 @@
 #include "io_disk.h"
 #include "io_hid.h"
 #include "io_launcher.h"
+#include "io_led.h"
 #include "io_net.h"
 #include "io_log.h"
 #include "io_ota.h"
@@ -270,12 +271,14 @@ static bool op_slot_try(void)
         return false;
     }
     s_op_busy = true;
+    io_led_busy_acquire();
     return true;
 }
 
 static void op_slot_release(void)
 {
     s_op_busy = false;
+    io_led_busy_release();
     if (s_op_sem) {
         xSemaphoreGive(s_op_sem);
     }
@@ -429,29 +432,12 @@ static size_t read_shared_file(const char *name, uint8_t *buf, size_t max)
  *
  * 原则:只放**设备自己能测出来**、且**现场的人会据此行动**的状态;
  * 颜色与节奏的对应只写在文档里,JSON 里不带颜色/文案/子状态。
+ *
+ * 状态的**计算**住在 io_led(见 io_led.h):LED 是物理输出,
+ * 没人调 status 的时候它也得自己亮 ⇒ 算状态不能挂在 status 请求上。
+ * 这里只是把同一个值报给 agent。
  */
-#define IO_LED_READY        0
-#define IO_LED_BOOTING      1
-#define IO_LED_NET_DOWN     2
-#define IO_LED_ACT_BUSY     3
-#define IO_LED_FAULT        4
 
-static int led_state(void)
-{
-    if (s_op_busy) {
-        return IO_LED_ACT_BUSY;      /* 动作执行中,优先级最高 */
-    }
-    if (!io_launcher_last_selftest_ok()) {
-        return IO_LED_FAULT;         /* 上次注入自检失败 */
-    }
-    if (!io_net_connect_started()) {
-        return IO_LED_BOOTING;       /* 还没发起过连接 */
-    }
-    if (!io_net_is_connected()) {
-        return IO_LED_NET_DOWN;
-    }
-    return IO_LED_READY;
-}
 
 static io_tool_out_t tool_status(void)
 {
@@ -480,7 +466,7 @@ static io_tool_out_t tool_status(void)
     cJSON_AddBoolToObject(o, "busy", s_op_busy);
 
     /* 设备状态码:一个 int(语义见 README 决策表"LED 语义"那一行) */
-    cJSON_AddNumberToObject(o, "led", led_state());
+    cJSON_AddNumberToObject(o, "led", io_led_state());
 
     uint32_t count = 0;
     const io_slot_desc_t *tbl = io_disk_slot_table(&count);
