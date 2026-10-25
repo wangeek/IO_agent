@@ -46,6 +46,8 @@
 #include "io_hid.h"
 #include "io_launcher.h"
 #include "io_net.h"
+#include "io_log.h"
+#include "io_ota.h"
 #include "io_payload.h"
 #include "io_usb.h"
 
@@ -95,12 +97,28 @@ static const char *const IO_MCP_PROTO_SUPPORTED[] = {
  *   - 太大 → 只给 URL,客户端自己去 GET /files/<name>
  */
 
-/* 内联进 MCP 结果的大小上限(超过就只给 URL)。 */
+/*
+ * 内联进 MCP 结果的大小上限(超过就只给 URL)。
+ *
+ * 64 KB:base64 后约 87 KB。**能一次发完** —— lwIP 的发送缓冲
+ * (SO_SNDBUF = 2×TCP_SND_BUF)已调到 32 KB,配合 /files/ 的分块流式,
+ * 大内容走 URL 那条路 ⇒ 这条通道上不会撞上"发不出去"。
+ * ★ 不要为了"看起来小"就砍这个阈值 ★ 砍了会让 capture 的 image 块
+ * 消失(帧几乎都超过 8 KB)⇒ agent 拿不到图,那是契约降级。
+ */
 #define IO_FILE_MAX_INLINE   (64 * 1024)
 /* 列目录一次最多看多少项(超过就截断并报 count)。 */
 #define IO_DIR_MAX            64
-/* 读一个文件时的缓冲(静态,httpd 单 task 用)。 */
-#define IO_FILE_BUF_MAX      (64 * 1024)
+/*
+ * 读一个文件时的缓冲(静态,httpd 单 task 用)。
+ *
+ * ★ 16 KB,不是 64 KB ★
+ *   这是**静态**缓冲,占的是内部 RAM(设备端只有 512 KB)。原来 64 KB,
+ *   挤得 lwIP 分配不到内存 ⇒ `mmap: esp_mmu_map(551): no mem` +
+ *   `httpd_sock_err: error in send : 11` ⇒ 并发打设备时 MCP 侧间歇性
+ *   连接失败(真机踩过)。大文件靠 `io_disk_read_file_at` 分块读,不需要大缓冲。
+ */
+#define IO_FILE_BUF_MAX      (16 * 1024)
 
 /* watcher 写的帧文件(目标机上的脚本产出)。 */
 static bool name_is_frame(const char *name)
@@ -370,7 +388,7 @@ static cJSON *rpc_ok(const cJSON *id, cJSON *result);
  * 从共享盘读一个文件。
  *
  * buf 必须是静态缓冲(httpd 是单 task,静态缓冲不会有并发问题;
- * 栈上放不下 64 KB)。
+ * 栈上放不下 16 KB)。
  *
  * @return 读到的字节数;失败返回 0
  */
@@ -493,6 +511,62 @@ static io_tool_out_t tool_status(void)
             cJSON_AddNumberToObject(w, "cap_mtime", (double)cap.mtime);
         }
         cJSON_AddItemToObject(o, "watcher", w);
+    }
+
+    /*
+     * 网络日志通道的状态。
+     * 单 Type-C 口的 dongle 没有串口了 ⇒ 日志只能走 WiFi,
+     * 所以"日志通道通没通"必须能被 agent 直接看见,而不是靠猜。
+     *   active  : 服务是否在跑(没配 IP 授权表就是 false ⇒ 日志面为零)
+     *   allowed : 授权表里的 IP 个数
+     *   rx      : 收到过的 UDP 包数
+     *   dropped : 其中因为源 IP 不在授权表被丢掉的(有人在问但没授权)
+     *   tx      : 回出去的包数 / 字节数
+     */
+    {
+        cJSON *lg = cJSON_CreateObject();
+        cJSON_AddNumberToObject(lg, "port", (double)io_log_port());
+        cJSON_AddBoolToObject(lg, "active", io_log_active());
+        cJSON_AddBoolToObject(lg, "open", io_log_opened());
+        cJSON_AddNumberToObject(lg, "allowed", (double)io_log_allow_count());
+        cJSON_AddNumberToObject(lg, "rx", (double)io_log_rx_packets());
+        cJSON_AddNumberToObject(lg, "dropped", (double)io_log_rx_rejected());
+        cJSON_AddNumberToObject(lg, "tx", (double)io_log_tx_packets());
+        cJSON_AddNumberToObject(lg, "bytes", (double)io_log_tx_bytes());
+        cJSON_AddNumberToObject(lg, "hook", (double)io_log_hook_calls());
+        cJSON_AddItemToObject(o, "log", lg);
+    }
+
+    /*
+     * OTA 状态 + 当前固件身份。
+     * 刷完固件后 agent 靠 `app.build` 确认"设备上的固件真的换了"
+     * —— 比看 uptime 可靠。
+     */
+    {
+        io_ota_info_t oi;
+        cJSON *ot = cJSON_CreateObject();
+        if (io_ota_get_info(&oi) == ESP_OK) {
+            cJSON_AddStringToObject(ot, "state", oi.state);
+            cJSON_AddNumberToObject(ot, "received", (double)oi.received);
+            cJSON_AddNumberToObject(ot, "total", (double)oi.total);
+            if (oi.boot[0]) {
+                cJSON_AddStringToObject(ot, "boot", oi.boot);
+                cJSON_AddStringToObject(ot, "next", oi.next);
+            }
+            if (oi.error[0]) {
+                cJSON_AddStringToObject(ot, "error", oi.error);
+            }
+        }
+        cJSON_AddItemToObject(o, "ota", ot);
+
+        io_ota_build_t bd;
+        cJSON *ab = cJSON_CreateObject();
+        if (io_ota_get_build(&bd) == ESP_OK) {
+            cJSON_AddStringToObject(ab, "version", bd.version);
+            cJSON_AddStringToObject(ab, "idf", bd.idf_ver);
+            cJSON_AddStringToObject(ab, "build", bd.build);
+        }
+        cJSON_AddItemToObject(o, "app", ab);
     }
 
     io_tool_out_t out = { o, false, false, NULL };
@@ -1025,6 +1099,61 @@ static io_tool_out_t tool_update(const cJSON *args)
     return tool_out(o, false);
 }
 
+/*
+ * flash —— 给设备刷**整机固件**(OTA)。
+ *
+ * 和 update 的区别(两个都是"写 flash",但写的东西不同):
+ *   update : 写**一个槽位里的引导文件**(WATCH.PS1 / AGENT.SH / AGENT.EXE),
+ *            内容是给目标机跑的脚本,下次开机的 overlay 铺到 RAM disk。
+ *   flash  : 换掉**整个 app 镜像**,刷完设备重启就跑新固件。
+ *
+ * 为什么必须有它:单 Type-C 口的 dongle 只有一个口,插在目标机上做
+ * HID+MSC ⇒ 开发机**烧不进去**了。固件更新必须走网络。
+ *
+ * 设备是**去开发机上拉**镜像(pull),不是开发机往里推(push):push 会把
+ * 设备唯一的 httpd task 占住 900 KB 的传输时长(那个 httpd 是单 task,
+ * 占住 = MCP 整个服务卡死)。
+ */
+static io_tool_out_t tool_flash(const cJSON *args)
+{
+    cJSON *o = cJSON_CreateObject();
+
+    const cJSON *url = cJSON_GetObjectItem(args, "url");
+    if (!cJSON_IsString(url) || !url->valuestring[0]) {
+        cJSON_AddBoolToObject(o, "ok", false);
+        cJSON_AddStringToObject(o, "error", "missing url");
+        return tool_out(o, true);
+    }
+
+    if (io_ota_busy()) {
+        cJSON_AddBoolToObject(o, "ok", false);
+        cJSON_AddBoolToObject(o, "busy", true);
+        cJSON_AddStringToObject(o, "error", "an OTA is already running");
+        return tool_out(o, true);
+    }
+
+    const esp_err_t rc = io_ota_start(url->valuestring);
+    if (rc != ESP_OK) {
+        cJSON_AddBoolToObject(o, "ok", false);
+        cJSON_AddStringToObject(o, "error", esp_err_to_name(rc));
+        return tool_out(o, true);
+    }
+
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddBoolToObject(o, "accepted", true);
+    cJSON_AddStringToObject(o, "url", url->valuestring);
+    cJSON_AddStringToObject(o, "note",
+                           "accepted; downloading in the background. The image is buffered "
+                           "in PSRAM first, so the device stays responsive while it "
+                           "downloads; it goes briefly unresponsive for a few seconds "
+                           "while the image is written to flash. When the download "
+                           "finishes the device REBOOTS and this connection drops. "
+                           "Poll status for ota.state / ota.received, then after the "
+                           "reboot check that ota.boot flipped to the other slot -- that "
+                           "is the proof the new image is the one running.");
+    return tool_out(o, false);
+}
+
 /* ------------------------------------------------------------------ */
 /* tools/list                                                           */
 /* ------------------------------------------------------------------ */
@@ -1191,6 +1320,23 @@ static cJSON *build_tools_list(void)
                             "Store a payload into the flash A/B bank. It takes effect at the "
                             "next boot (the RAM disk copy is written by the boot-time overlay).",
                             p, "slot");
+        add_output_schema(t);
+    }
+    {
+        cJSON *p = cJSON_CreateObject();
+        cJSON_AddItemToObject(p, "url", tool_schema_str(
+            "http(s) URL of the firmware image, e.g. http://192.168.1.5:8000/sophon.bin"));
+        cJSON *t = add_tool(tools, "flash", "Flash the whole firmware over WiFi (OTA)",
+                            "Replace the device's own app image: the device DOWNLOADS the "
+                            "image from the URL, writes it into the other OTA slot, verifies "
+                            "it, switches the boot partition and reboots. This is how a "
+                            "single-Type-C dongle gets new firmware, since the only USB port "
+                            "is occupied by the HID+MSC link to the target machine. The "
+                            "reply is {\"accepted\":true}; when the download finishes the "
+                            "device REBOOTS and this connection drops -- re-discover it and "
+                            "check that the firmware build time changed. A bad image is "
+                            "rejected and the current firmware keeps running.",
+                            p, "url");
         add_output_schema(t);
     }
     return tools;
@@ -1524,6 +1670,8 @@ static cJSON *dispatch_rpc(const cJSON *req)
             out = tool_input(targs);
         } else if (!strcmp(n, "update")) {
             out = tool_update(targs);
+        } else if (!strcmp(n, "flash")) {
+            out = tool_flash(targs);
         } else {
             /*
              * 未知工具是**协议错误**(规范:未知工具用 JSON-RPC error,
@@ -1749,21 +1897,43 @@ static esp_err_t http_files_get(httpd_req_t *req)
     }
 
     static uint8_t buf[IO_FILE_BUF_MAX];
-    const size_t len = read_shared_file(info.name, buf, sizeof(buf));
-    if (len == 0) {
+
+    const char *ctype = "application/octet-stream";
+    /* 头部 sniff:只读开头一点,判断是不是 JPEG */
+    size_t head = 0;
+    if (io_disk_read_file_at(info.name, 0, buf, sizeof(buf), &head) != ESP_OK || head == 0) {
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "read failed");
         return ESP_FAIL;
     }
-
-    const char *ctype = "application/octet-stream";
-    if (bytes_are_jpeg(buf, len)) {
+    if (bytes_are_jpeg(buf, head)) {
         ctype = "image/jpeg";
     } else if (!strcmp(info.name, "DIFF.IDX")) {
         ctype = "application/json";
     }
     httpd_resp_set_type(req, ctype);
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    httpd_resp_send(req, (const char *)buf, len);
+
+    /*
+     * **流式 + 分块发送**。
+     * 一次 send 几百 KB 塞不进 lwIP 的发送缓冲 ⇒ 等 SO_SNDTIMEO 等满 5 秒
+     * ⇒ `httpd_sock_err: error in send : 11` ⇒ 连接被掐断,客户端只看到
+     * "连接掉了"(真机在并发压测下抓到)。而且设备端只有 512 KB 内部 RAM,
+     * 根本放不下整个文件。
+     * ⇒ 读一块(16 KB)、发一块(chunked),内存恒定,大文件也能传完。
+     */
+    size_t off = 0;
+    while (off < info.size) {
+        size_t got = 0;
+        if (io_disk_read_file_at(info.name, (uint32_t)off, buf, sizeof(buf), &got) != ESP_OK ||
+            got == 0) {
+            break;
+        }
+        if (httpd_resp_send_chunk(req, (const char *)buf, got) != ESP_OK) {
+            return ESP_FAIL;              /* 客户端断了 */
+        }
+        off += got;
+    }
+    httpd_resp_send_chunk(req, NULL, 0);  /* 结束分块 */
     return ESP_OK;
 }
 
@@ -1817,6 +1987,13 @@ esp_err_t io_mcp_start(void)
     cfg.server_port = IO_MCP_PORT;
     cfg.max_uri_handlers = 6;
     cfg.lru_purge_enable = true;
+    /*
+     * max_open_sockets 保持 IDF 默认(7 = LWIP_MAX_SOCKETS 10 - 服务器内部 3)。
+     * **不用为并发调大** —— MCP 场景是"一个 agent 顺序调工具",不是并发负载;
+     * 而每个 socket 都要占内部 RAM,设备总共只有 512 KB。
+     * 之前"间歇性连接失败"的真因是**内存耗尽**(status 每次调用都 mmap
+     * otadata 分区),不是连接池小。
+     */
     /*
      * uri_match_fn:打开**通配 URI 模板**。
      *

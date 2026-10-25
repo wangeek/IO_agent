@@ -92,7 +92,11 @@ Identity, link state, slot table, and whether the target's watcher is running.
           {"name":"AGENT.EXE","kind":"slot","capacity":65536,"len":0},
           {"name":"PAYLOAD.BIN","kind":"inbox","capacity":131072,"len":0}],
  "payload_seq":3,
- "watcher":{"running":true,"cap_mtime":815226168}}
+ "watcher":{"running":true,"cap_mtime":815226168},
+ "log":{"port":8090,"active":true,"open":true,"allowed":1,
+        "rx":12,"dropped":0,"tx":12,"bytes":4096,"hook":530},
+ "ota":{"state":"idle","received":0,"total":-1,"boot":"ota_0","next":"ota_1"},
+ "app":{"version":"348dd80","idf":"v5.5.6","build":"Oct 25 2026"}}
 ```
 
 - `usb.link_alive` — the target machine is enumerating the dongle. `false`
@@ -107,6 +111,17 @@ Identity, link state, slot table, and whether the target's watcher is running.
 - `watcher.running` — the target's watcher is up. The judgement is "is `CAP.TXT`
   on the volume", so it goes stale after a dongle reboot (the RAM disk is
   rebuilt on every boot). `cap_mtime` is present when it is running.
+- `log` — the network log channel. `active` means an allowlist is configured
+  (no allowlist ⇒ the channel is off and `allowed` is 0). `open` means the UDP
+  socket is up. `dropped` counts requests dropped because the **source IP was
+  not in the allowlist** — it rising means someone is asking who is not
+  allowed to. `rx`/`tx` are packet counts, `bytes` the bytes sent out.
+- `ota` — the firmware update channel. `state` is `idle` / `downloading` /
+  `staged` / `rebooting` / `failed`. `boot` is the slot the device is running
+  from, `next` the slot the next update writes to; after a successful flash
+  `boot` flips to the other slot.
+- `app` — the running firmware: `version` (git describe), `idf`, `build`
+  (compile timestamp).
 
 Slot table (fixed): `0 WATCH.PS1` 32 KB, `1 AGENT.SH` 32 KB, `2 AGENT.EXE`
 64 KB, `3 PAYLOAD.BIN` 128 KB (inbox — the host writes it over USB, it is not
@@ -240,6 +255,33 @@ device is busy with another action the call returns `busy`.
 The flash bank is the single source of truth: the RAM disk slot is a copy
 laid down at boot. Do not expect a running script to change after an update.
 
+### `flash` — replace the dongle's own firmware (OTA)
+
+| argument | type | notes |
+|---|---|---|
+| `url` | string | `http(s)://` URL of the firmware image — required |
+
+```json
+{"ok":true,"accepted":true,"url":"http://192.168.1.5:8000/sophon.bin","note":"..."}
+```
+
+The device **downloads** the image (it does not accept an upload — an upload
+would occupy the device's only HTTP task for the whole transfer and freeze
+MCP). It writes the image into the other OTA slot, verifies it (descriptor +
+SHA256), switches the boot slot and reboots.
+
+- The reply arrives **immediately**; the reboot drops the connection a few
+  seconds later. That drop is expected, not a failure.
+- A bad image is rejected and the current firmware keeps running — the boot
+  slot is only switched after verification passes.
+- To confirm the new firmware is really the one running, check
+  `status.ota.boot`: it must have flipped to the other slot. The `version`
+  string does **not** change when you reflash the same build, so it is not
+  a sufficient check on its own.
+- Only relevant for a single-Type-C dongle (the only USB port is occupied by
+  the HID+MSC link to the target machine). With a dev board that still has a
+  serial port, flashing over USB is simpler.
+
 ## `/ping`
 
 Plain JSON, not JSON-RPC:
@@ -262,9 +304,10 @@ Plain JSON, not JSON-RPC:
 
 ## What the device deliberately does NOT do
 
-- No `wifi set` / reboot / OTA tool. Any action that would drop the very
-  connection the call came in on is refused by design — reconfigure the dongle
-  over its USB disk (`DEV.CFG`), not over MCP.
+- No `wifi set` / reboot tool. Any action that would drop the very connection
+  the call came in on is refused by design — reconfigure the dongle over its
+  USB disk (`DEV.CFG`), not over MCP. (`flash` is the one exception: it
+  answers first and reboots afterwards, so the reply does reach the caller.)
 - No job id, no polling endpoint. The marker files on the target machine are
   the state.
 - No image processing. Cropping and frame diffing belong on the agent side.

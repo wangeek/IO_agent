@@ -19,6 +19,22 @@ CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
 # 1kHz tick:注入时序目标 <10ms,需要 ms 级定时精度
 CONFIG_FREERTOS_HZ=1000
 
+# ---------------------------------------------------------------------------
+# lwIP TCP 窗口
+#
+# ★ 只调**发送**方向,接收方向保持默认 ★
+#   设备要发的响应动辄 20 KB+(read 一个 20 KB 的脚本 → base64 后 27 KB),
+#   而 esp_http_server 是**单 task**:一次 send 塞不进就等 SO_SNDTIMEO,
+#   等满 5 秒就报 `httpd_sock_err: error in send : 11`(EAGAIN)→ 连接被掐断,
+#   客户端只看到"连接掉了"。⇒ 发送缓冲(SO_SNDBUF = 2×TCP_SND_BUF)调到 32 KB。
+#
+#   接收窗口(TCP_WND)**不要动**:它决定每个连接预留多少内部 RAM,
+#   而设备收到的请求都很小(< 1 KB),设备总共只有 512 KB 内部 RAM。
+#   socket 数(LWIP_MAX_SOCKETS)同理保持默认 —— 每个 socket 都占内存,
+#   而 MCP 场景是"一个 agent 顺序调工具",不需要为并发留余量。
+# ---------------------------------------------------------------------------
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=16384
+
 # 看门狗不允许被看门狗门禁打卡/收窄,WDT
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
 

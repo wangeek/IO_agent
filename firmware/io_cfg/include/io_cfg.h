@@ -9,6 +9,7 @@
  *   wifi_pass  WiFi 密码
  *   psk        设备 PSK(后续 TLS-PSK / 鉴权用)
  *   name       设备名(mDNS 实例名的一部分)
+ *   log_ips    日志服务的源 IP 授权表(逗号分隔)
  */
 #pragma once
 
@@ -25,6 +26,7 @@ extern "C" {
 #define IO_CFG_WIFI_PASS_MAX 65
 #define IO_CFG_PSK_MAX        65
 #define IO_CFG_NAME_MAX       32
+#define IO_CFG_LOG_IPS_MAX    160
 
 /** 初始化 NVS(挂载 + 打开命名空间)。 */
 esp_err_t io_cfg_init(void);
@@ -63,6 +65,15 @@ esp_err_t io_cfg_apply_provisioning_file(bool *changed);
 /** 设备名(默认 "sophon")。 */
 const char *io_cfg_device_name(void);
 esp_err_t io_cfg_set_device_name(const char *name);
+
+/**
+ * 日志服务的源 IP 授权表(逗号分隔,例如 "172.17.20.17,192.168.1.5")。
+ *
+ * 授权判据:**能访问开发机日志的人 = 能在 DEV.CFG 里写下自己 IP 的人**。
+ * 空字符串 = 没有授权表 = 日志功能整个关闭(设备端零开销)。
+ */
+esp_err_t io_cfg_get_log_ips(char *out, size_t len);
+esp_err_t io_cfg_set_log_ips(const char *ips_csv);
 
 /**
  * 启动串口命令行(首次配网用)。

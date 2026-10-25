@@ -138,6 +138,23 @@ esp_err_t io_disk_fat_geometry(io_fat_geom_t *g);
  */
 esp_err_t io_disk_read_file(const char *name, void *buf, size_t max, size_t *out_len);
 
+/**
+ * 从文件的第 offset 字节开始读(流式传大文件用)。
+ *
+ * `io_disk_read_file` 要一次把整个文件读进调用方的缓冲,而桌面帧
+ * (JPEG)动辄几百 KB —— 设备端只有 512 KB 内部 RAM,放不下;
+ * 一次 send 几百 KB 也会把 lwIP 的发送缓冲撑爆。
+ * 所以大文件要"读一块、发一块":用固定大小(8~16 KB)的缓冲反复调这个。
+ *
+ * @param name      卷上的文件名
+ * @param offset    起始字节偏移
+ * @param buf       接收缓冲
+ * @param max       缓冲大小(超出则截断)
+ * @param out_len   实际读到的字节数
+ */
+esp_err_t io_disk_read_file_at(const char *name, uint32_t offset,
+                               void *buf, size_t max, size_t *out_len);
+
 /** 统计:主机写块次数与字节数(M1 验证"主机写 → 设备收到"用)。 */
 uint32_t io_disk_write_stats_blocks(void);
 uint64_t io_disk_write_stats_bytes(void);

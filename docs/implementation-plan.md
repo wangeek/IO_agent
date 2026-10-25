@@ -216,13 +216,18 @@ Sophon/
   稳定态随机 20 次全屏截图全部 ≤1s、成功率 100%。
 
 ### M5 MCP 面(跑在设备上)
-- 设备端 MCP server(Streamable HTTP + JSON-RPC 2.0),工具共 **6 个**:
-  `status` / `ls` / `read` / `capture` / `input` / `update`。
+- 设备端 MCP server(Streamable HTTP + JSON-RPC 2.0),工具共 **7 个**:
+  `status` / `ls` / `read` / `capture` / `input` / `update` / `flash`。
   命名规则:**全是动词,全小写单词,零分隔符**(名称绑定层的 `ioagent` 不改,只改人读的对外契约)。
   `update` 是 **2026-10-22 增的 T2 工具**(运行时下发引导内容,见
   `agent-interface-mcp.md` §二之二)。
+  `flash` 是 **2026-10-25 增的整机固件 OTA 工具**(单 Type-C dongle 只有一个口,
+  插在目标机上做 HID+MSC ⇒ 开发机烧不进去了,固件更新必须走网络;见 §四之四)。
 - 新鲜度:取帧时可按 `mtime` 判新旧(盘上目录项带时间戳),当前实现是取**最新一帧**。
 - 帧用 MCP 原生 **image 内容块**返回(小于 64 KB 内联 base64);超过的只给 `GET /files/<name>` 的 URL。ROI 与 diff 清单在 agent 侧做。
+  **内联阈值 64 KB 不要下调** —— 帧几乎都超过 8 KB,砍到 8 KB 会让 image 块直接消失(契约降级)。
+- `GET /files/<name>` 用 **chunked 分块发**(读一块发一块):几百 KB 的桌面帧一次 send
+  塞不进 lwIP 的发送缓冲,会等 `SO_SNDTIMEO` 等满 5 秒然后失败。
 - 状态诚实:`capture` 无帧时返回 `isError:true` + 明确原因,不误报。
 - 验收:`input → capture → 决策` 闭环全链无人工、无 host 侧对目标机的软件依赖。
 
@@ -349,6 +354,25 @@ Sophon/
    是"每次开机铺开的副本"。**运行期下发只写 flash,不碰副本**。RAM disk 是与宿主共享的
    可写存储,运行期改它 = 和宿主抢同一块簇(宿主可能已删槽文件、簇被释放,或已建了
    占用同簇的新文件)。真源放到宿主够不到的地方,竞争就不存在。
+
+### 4.7 WiFi 日志与 OTA 通道(2026-10-25 冻结)
+
+单 Type-C dongle 只有一个口(插在目标机上做 HID+MSC)⇒ **开发机烧不进去**,
+固件更新与日志都必须走网络。两条通道都定成**「host 主动连设备」**。
+
+| 项 | 冻结值 |
+|---|---|
+| 日志服务 | **UDP server,端口 8090**。开发机发一个包来"要"日志,设备把日志回给**请求的源地址**(回程流量 ⇒ 开发机**不用加防火墙规则**) |
+| 日志授权 | 设备端预置**源 IP 白名单**(`DEV.CFG` 的 `logips=`,与 `ssid` 一并给用户)。不在表里的请求**直接丢,连回包都不给**;**没配就不开**(socket 不建、钩子不装)⇒ 量产固件日志面为零 |
+| 日志热切换 | UART0 控制台 `log ips <ip>[,<ip>]` / `log off` / `log status`(开发机 DHCP 换 IP 后不用重贴 U 盘) |
+| 日志回执 | `status.log{active, open, allowed, rx, dropped, tx, bytes, hook}` —— `dropped` 涨 = "有人在问但没授权" |
+| OTA 工具 | `flash { url }`。**pull 模型**(设备去开发机上拉镜像),写进另一个 OTA 槽,`esp_ota_end` 校验(描述符 + SHA256)通过才切启动分区 ⇒ **刷坏了不变砖** |
+| OTA 凭据 | `status.ota.boot` / `status.ota.next` = 当前启动槽 / 下次写入槽。**刷同一份构建时版本号不变**,所以"新固件真的在跑"要看 `boot` 翻转,不能只看版本号 |
+
+> **为什么 OTA 不用 push**:push 900 KB 会占住设备**唯一的 httpd task** 整个传输时长
+> ⇒ MCP 整个服务卡死。pull 边下边写另一个槽,校验不过当前分区不动。
+> **为什么日志不用 HTTP**:试过"第二个 httpd + chunked 流" —— 代价太高(多一个 httpd task
+> + 一套 socket 管理 + 每条日志一次 vprintf 钩子),而且实测会外溢到 MCP 通道。
 
 ## 五、硬件到货后的第一动作
 

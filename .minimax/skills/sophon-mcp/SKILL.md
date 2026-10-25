@@ -9,7 +9,7 @@ description: |
   "用 Sophon 控制那台机器",
   "看这台机器的屏幕", "远程点一下那台电脑", "dongle 注入", "截那台机器的图",
   "the other PC", "remote desktop via the dongle". Covers device discovery over
-  mDNS, the six MCP tools, and the injection discipline (single trigger, never
+  mDNS, the seven MCP tools, and the injection discipline (single trigger, never
   auto-retry, IME probe before typing). Do NOT use for generic remote control
   that does not go through this dongle, for building/flashing its firmware, or
   for reading files on the local machine.
@@ -32,19 +32,30 @@ you ──WiFi──▶ dongle ──USB HID──▶ target machine's keyboard+
 So "the target machine" and "the host you run on" are two different computers.
 The dongle is the only thing that bridges them.
 
-## The six tools
+## The seven tools
 
 | tool | what it does | touches the target machine? |
 |---|---|---|
-| `status` | identity, USB/HID link state, LED code, slot table, whether the watcher runs | no |
+| `status` | identity, USB/HID link state, LED code, slot table, whether the watcher runs, OTA/log state | no |
 | `ls` | list the shared disk: name, size, last-write time | no |
 | `read` | read one file off the shared disk by 8.3 name | no |
 | `capture` | the **newest** frame on the disk, as an MCP image block | no |
 | `input` | inject **one** action (keyboard / mouse / macro) | **yes** |
 | `update` | store a payload into a flash slot (effective at next boot) | no |
+| `flash` | replace the dongle's **own firmware** over WiFi (OTA) | no |
 
-Naming rule: all six are **one lowercase verb, no separators**. `read` takes a
-`name`; `input` takes an `action`; `update` takes a `slot`.
+Naming rule: all seven are **one lowercase verb, no separators**. `read` takes a
+`name`; `input` takes an `action`; `update` takes a `slot`; `flash` takes a `url`.
+
+`flash` is only for when the dongle is a single-Type-C unit plugged into the
+target machine — then there is no USB port left to flash it from a dev box, so
+the firmware has to arrive over the network. The device **downloads** the image
+(the host serves it, e.g. `tools/ota_server.py`), writes it into the other OTA
+slot, verifies it, switches the boot slot and reboots. The reply arrives
+immediately; the reboot drops the connection a few seconds later — that is
+expected, not a failure. To confirm the new firmware is really the one running,
+check `status.ota.boot`: it must have flipped to the other slot (the version
+string does not change when you reflash the same build).
 
 ## Inputs to collect
 

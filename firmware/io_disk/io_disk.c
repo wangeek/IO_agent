@@ -374,6 +374,93 @@ esp_err_t io_disk_read_file(const char *name, void *buf, size_t max, size_t *out
     return (copied > 0) ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 
+/*
+ * 从文件的**第 offset 字节**开始读(流式用)。
+ *
+ * 为什么需要它:`io_disk_read_file` 要一次把整个文件读进调用方的缓冲,
+ * 而桌面帧(JPEG)动辄几百 KB —— 设备端只有 512 KB 内部 RAM,根本放不下;
+ * 就算放得下,一次 send 几百 KB 也会把 lwIP 的发送缓冲撑爆
+ * ⇒ `httpd_sock_err: error in send : 11`,连接被掐断。
+ *
+ * 所以大文件必须"读一块、发一块"。这里按簇链走到 offset 所在的位置,
+ * 再往后读 max 字节 —— 调用方用固定大小(8~16 KB)的缓冲反复调即可。
+ */
+esp_err_t io_disk_read_file_at(const char *name, uint32_t offset,
+                               void *buf, size_t max, size_t *out_len)
+{
+    io_fat_geom_t g;
+    io_file_info_t info;
+
+    if (!name || !buf) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (io_disk_fat_geometry(&g) != ESP_OK) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (!io_disk_find_file(name, &info) || info.first_cluster < 2) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (offset >= info.size) {
+        if (out_len) {
+            *out_len = 0;
+        }
+        return ESP_OK;                    /* 已经到文件尾了 */
+    }
+
+    uint8_t *dst = (uint8_t *)buf;
+    size_t copied = 0;
+    uint32_t skip = offset;
+    uint16_t cluster = info.first_cluster;
+    uint32_t guard = 0;
+    const uint32_t max_clusters = g.fat_sectors * (IO_DISK_SECTOR_SIZE / 2);
+    const size_t cluster_bytes = (size_t)g.cluster_sectors * IO_DISK_SECTOR_SIZE;
+
+    while (cluster >= 2 && cluster < 0xFFF8) {
+        if (++guard > max_clusters) {
+            return ESP_ERR_INVALID_SIZE;   /* 簇链成环 */
+        }
+        const uint32_t lba = g.data_lba +
+                             ((uint32_t)cluster - 2u) * g.cluster_sectors;
+        if ((uint64_t)lba + g.cluster_sectors > s_sectors) {
+            break;
+        }
+        const uint8_t *src = s_vol + (size_t)lba * IO_DISK_SECTOR_SIZE;
+
+        /* 整个簇都在 offset 之前 ⇒ 跳过 */
+        if (skip >= cluster_bytes) {
+            skip -= (uint32_t)cluster_bytes;
+            cluster = fat_next_cluster(&g, cluster);
+            continue;
+        }
+
+        /* 这一簇里要取的字节:[skip, cluster_bytes) */
+        size_t take = cluster_bytes - skip;
+        const uint32_t remain = info.size - offset - copied;
+        if (take > remain) {
+            take = remain;
+        }
+        if (copied + take > max) {
+            take = max - copied;          /* 缓冲不够,截断 */
+        }
+        if (take == 0) {
+            break;
+        }
+        memcpy(dst + copied, src + skip, take);
+        copied += take;
+
+        if (copied + offset >= info.size) {
+            break;
+        }
+        cluster = fat_next_cluster(&g, cluster);
+        skip = 0;
+    }
+
+    if (out_len) {
+        *out_len = copied;
+    }
+    return (copied > 0) ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
 /* "CAP.TXT" -> "CAP     TXT"(8.3 的 11 字节目录项名)。 */
 static bool fat_make_83(const char *in, uint8_t out[11])
 {

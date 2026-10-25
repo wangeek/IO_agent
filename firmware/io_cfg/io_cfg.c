@@ -12,6 +12,7 @@
 #include <freertos/task.h>
 
 #include "io_disk.h"
+#include "io_log.h"
 
 static const char *TAG = "io_cfg";
 
@@ -20,6 +21,7 @@ static const char *TAG = "io_cfg";
 #define NVS_KEY_PASS "wifi_pass"
 #define NVS_KEY_PSK  "psk"
 #define NVS_KEY_NAME "name"
+#define NVS_KEY_LOG_IPS "log_ips"
 #define NVS_KEY_PROV_CRC "prov_crc"
 
 /* 配网文件:宿主写到虚拟盘上,设备自己取(见 io_cfg.h 的说明) */
@@ -161,6 +163,30 @@ const char *io_cfg_device_name(void)
     return s_name;
 }
 
+/*
+ * 日志服务的源 IP 授权表。
+ * 空 = 没有授权表 = 日志功能关闭(设备端零开销,见 io_log.h)。
+ */
+esp_err_t io_cfg_get_log_ips(char *out, size_t len)
+{
+    if (!out || !len) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    out[0] = '\0';
+    return ns_get_str(NVS_KEY_LOG_IPS, out, len);
+}
+
+esp_err_t io_cfg_set_log_ips(const char *ips_csv)
+{
+    if (!ips_csv) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (strlen(ips_csv) >= IO_CFG_LOG_IPS_MAX) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return ns_set_str(NVS_KEY_LOG_IPS, ips_csv);
+}
+
 /* ------------------------------------------------------------------ */
 /* 配网文件(DEV.CFG):宿主写 U 盘 → 设备自己取                              */
 /* ------------------------------------------------------------------ */
@@ -213,8 +239,10 @@ esp_err_t io_cfg_apply_provisioning_file(bool *changed)
     char ssid[IO_CFG_WIFI_SSID_MAX] = {0};
     char pass[IO_CFG_WIFI_PASS_MAX] = {0};
     char name[IO_CFG_NAME_MAX] = {0};
+    char logips[IO_CFG_LOG_IPS_MAX] = {0};
     bool have_ssid = false;
     bool have_pass = false;
+    bool have_logips = false;
 
     char *line = buf;
     while (line && *line) {
@@ -242,42 +270,65 @@ esp_err_t io_cfg_apply_provisioning_file(bool *changed)
                 have_pass = true;    /* 写了 pass= 就是显式给密码(空=开放网络) */
             } else if (!strcmp(key, "name") && val[0]) {
                 strncpy(name, val, sizeof(name) - 1);
+            } else if (!strcmp(key, "logips")) {
+                /*
+                 * 日志服务的源 IP 授权表(逗号分隔)。
+                 * 写空 = 清空授权表 = 关掉日志服务。
+                 */
+                strncpy(logips, val, sizeof(logips) - 1);
+                have_logips = true;
             }
         }
         line = nl ? nl + 1 : NULL;
     }
 
-    if (!have_ssid) {
-        ESP_LOGW(TAG, "%s has no ssid -- ignored", PROV_FILE);
+    if (!have_ssid && !have_logips) {
+        ESP_LOGW(TAG, "%s has no ssid and no logips -- ignored", PROV_FILE);
         return ESP_ERR_INVALID_ARG;
     }
 
-    /*
-     * 没写 pass 键 = **沿用 NVS 里已有的密码**(只换 SSID 时不必重贴密码);
-     * 写了 pass= (空) = 开放网络。
-     */
-    if (!have_pass) {
-        char old[IO_CFG_WIFI_PASS_MAX] = {0};
-        if (io_cfg_get_wifi(NULL, 0, old, sizeof(old)) == ESP_OK) {
-            strncpy(pass, old, sizeof(pass) - 1);
-            pass[sizeof(pass) - 1] = '\0';
+    if (have_ssid) {
+        /*
+         * 没写 pass 键 = **沿用 NVS 里已有的密码**(只换 SSID 时不必重贴密码);
+         * 写了 pass= (空) = 开放网络。
+         */
+        if (!have_pass) {
+            char old[IO_CFG_WIFI_PASS_MAX] = {0};
+            if (io_cfg_get_wifi(NULL, 0, old, sizeof(old)) == ESP_OK) {
+                strncpy(pass, old, sizeof(pass) - 1);
+                pass[sizeof(pass) - 1] = '\0';
+            }
+        }
+        esp_err_t rc = io_cfg_set_wifi(ssid, pass);
+        if (rc != ESP_OK) {
+            return rc;
+        }
+        if (name[0]) {
+            io_cfg_set_device_name(name);
         }
     }
 
-    esp_err_t rc = io_cfg_set_wifi(ssid, pass);
-    if (rc != ESP_OK) {
-        return rc;
+    /*
+     * 日志授权表:与 ssid 解耦 —— 只想改日志 IP 的话,DEV.CFG 里**只写
+     * logips= 就行**,不必把 WiFi 密码再贴一遍。
+     */
+    if (have_logips) {
+        esp_err_t rc = io_cfg_set_log_ips(logips);
+        if (rc != ESP_OK) {
+            return rc;
+        }
     }
-    if (name[0]) {
-        io_cfg_set_device_name(name);
-    }
-    rc = ns_set_u32(NVS_KEY_PROV_CRC, crc);
+
+    esp_err_t rc = ns_set_u32(NVS_KEY_PROV_CRC, crc);
     if (rc != ESP_OK) {
         return rc;
     }
     /* 密码不打印 */
-    ESP_LOGW(TAG, "provisioning applied from %s: ssid=\"%s\" pass=%s name=%s",
-             PROV_FILE, ssid, pass[0] ? "<set>" : "<open>", name[0] ? name : s_name);
+    ESP_LOGW(TAG, "provisioning applied from %s: ssid=\"%s\" pass=%s name=%s logips=%s",
+             PROV_FILE, have_ssid ? ssid : "(unchanged)",
+             have_ssid ? (pass[0] ? "<set>" : "<open>") : "-",
+             have_ssid ? name : s_name,
+             have_logips ? (logips[0] ? logips : "(cleared)") : "(unchanged)");
     if (changed) {
         *changed = true;
     }
@@ -344,6 +395,10 @@ static void print_status(void)
         printf("psk : <not configured>\n");
     }
     printf("name: %s\n", s_name);
+    char ips[IO_CFG_LOG_IPS_MAX] = {0};
+    io_cfg_get_log_ips(ips, sizeof(ips));
+    printf("log : allowlist=%s service=%s\n", ips[0] ? ips : "<none>",
+           io_log_active() ? "on" : "off");
 }
 
 static void handle_line(char *line)
@@ -387,7 +442,48 @@ static void handle_line(char *line)
         printf("name set: %s\n", (rc == ESP_OK) ? "ok" : esp_err_to_name(rc));
         return;
     }
-    printf("unknown command (try: wifi scan / wifi set / psk set / name set / status)\n");
+    /*
+     * 日志服务的源 IP 授权表。
+     * 主路径是 DEV.CFG 的 `logips=`(与 ssid 一并给用户),这条命令是
+     * 应急/热切换通道 —— 开发机 DHCP 换了 IP 之后,不用重贴 U 盘。
+     */
+    if (strncmp(line, "log ", 4) == 0) {
+        char *arg = line + 4;
+        char ips[IO_CFG_LOG_IPS_MAX] = {0};
+        if (!strcmp(arg, "status")) {
+            io_cfg_get_log_ips(ips, sizeof(ips));
+            printf("log : allowlist=%s service=%s allowed=%u\n",
+                   ips[0] ? ips : "<none>",
+                   io_log_active() ? "on" : "off",
+                   (unsigned)io_log_allow_count());
+            return;
+        }
+        if (!strcmp(arg, "off")) {
+            io_cfg_set_log_ips("");
+            io_log_stop();
+            printf("log : off (allowlist cleared)\n");
+            return;
+        }
+        if (strncmp(arg, "ips ", 4) == 0) {
+            char *csv = arg + 4;
+            if (io_cfg_set_log_ips(csv) != ESP_OK) {
+                printf("log ips: bad value (too long?)\n");
+                return;
+            }
+            io_log_stop();          /* 已经在跑就先停干净 */
+            if (io_log_net_start(csv) == ESP_OK) {
+                io_log_net_open();
+                printf("log ips: ok (%s)\n", csv);
+            } else {
+                printf("log ips: not started (bad ip list?)\n");
+            }
+            return;
+        }
+        printf("log: usage: log status | log ips <ip>[,<ip>...] | log off\n");
+        return;
+    }
+    printf("unknown command (try: wifi scan / wifi set / psk set / name set / "
+           "log ips / status)\n");
 }
 
 static void console_task(void *arg)
@@ -397,7 +493,8 @@ static void console_task(void *arg)
     size_t len = 0;
 
     printf("\n=== Sophon console ===\n");
-    printf("commands: wifi scan | wifi set <ssid> [pass] | psk set <psk> | name set <n> | status\n");
+    printf("commands: wifi scan | wifi set <ssid> [pass] | psk set <psk> | name set <n> | "
+           "log ips <ip>[,<ip>] | log off | status\n");
     printf("sophon> ");
 
     for (;;) {

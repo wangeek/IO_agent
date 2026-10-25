@@ -31,6 +31,8 @@ set(EXTRA_COMPONENT_DIRS
     "${CMAKE_CURRENT_LIST_DIR}/io_launcher"
     "${CMAKE_CURRENT_LIST_DIR}/io_cfg"
     "${CMAKE_CURRENT_LIST_DIR}/io_net"
+    "${CMAKE_CURRENT_LIST_DIR}/io_log"
+    "${CMAKE_CURRENT_LIST_DIR}/io_ota"
     "${CMAKE_CURRENT_LIST_DIR}/io_mcp"
 )
 

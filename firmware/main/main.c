@@ -25,6 +25,7 @@
 #include "io_launcher.h"
 #include "io_cfg.h"
 #include "io_net.h"
+#include "io_log.h"
 #include "io_mcp.h"
 
 static const char *TAG = "sophon";
@@ -42,6 +43,16 @@ static void netboot_task(void *arg)
         if (io_net_is_connected()) {
             ESP_LOGI(TAG, "starting mDNS on %s", io_net_ip());
             io_net_start_mdns(IO_MCP_PORT);
+            /*
+             * 日志服务的 socket **等 WiFi 连上再开**。
+             * ESP32-S3 开机时 Core 1 要做 RF 校准(读 eFuse ⇒ flash 操作),
+             * 而 Core 0 若此时正好阻塞在 socket 接收的临界区里等 portMux,
+             * 就死锁成 `Interrupt wdt timeout`(实测炸过一次)。
+             * 钩子是早就装好的,所以这段开机日志照样攒在环里,第一次请求能补发。
+             */
+            if (io_log_active()) {
+                io_log_net_open();
+            }
             vTaskDelete(NULL);
             return;
         }
@@ -65,6 +76,26 @@ static void prov_task(void *arg)
         if (io_cfg_apply_provisioning_file(&changed) == ESP_OK && changed) {
             ESP_LOGI(TAG, "provisioning file changed -> reconnecting WiFi");
             io_net_reconnect(NULL, NULL);
+            /*
+             * 日志服务的授权表也可能刚被改过。服务是**开机时**按 NVS 里的
+             * 授权表起的,所以这里补一刀:还没起就现在起(开发者写完
+             * DEV.CFG 不用重启就能看到日志)。
+             * 已经起着的**改授权表要重启**才生效(换 IP 授权属于安全相关
+             * 变更,不做热切换)。
+             */
+            char ips[IO_CFG_LOG_IPS_MAX] = {0};
+            if (io_cfg_get_log_ips(ips, sizeof(ips)) == ESP_OK && ips[0]) {
+                if (!io_log_active()) {
+                    if (io_log_net_start(ips) == ESP_OK) {
+                        io_log_net_open();
+                        ESP_LOGI(TAG, "network log started (allowlist from provisioning file)");
+                    }
+                } else {
+                    ESP_LOGW(TAG, "log allowlist changed -- restart the device to apply");
+                }
+            } else if (io_log_active()) {
+                ESP_LOGW(TAG, "log allowlist cleared -- restart the device to disable it");
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
@@ -174,7 +205,53 @@ void app_main(void)
         ESP_LOGW(TAG, "WiFi not configured yet (%s). Use the UART console: "
                  "'wifi scan' / 'wifi set <ssid> [pass]'", esp_err_to_name(nc));
     }
-    ESP_ERROR_CHECK(io_mcp_start());
+
+    /*
+     * 网络日志:日志同时送 UART 和 WiFi(UDP + 源 IP 授权表)。
+     * 单 Type-C 口的 dongle 没有第二个 USB 口 ⇒ 串口这条路会消失,
+     * 日志必须能从网络看到,否则每次烧录都只能靠猜。
+     *
+     * **授权**:设备端有一张预先配置好的源 IP 白名单(DEV.CFG 的 `logips=`),
+     * 收到 UDP 包先比源 IP,不在表里就直接丢、连回包都不给。
+     * **没配白名单 ⇒ 这个服务整个不开**(socket 不建、钩子不装)⇒ 量产固件
+     * 的日志面和开销都是零。
+     *
+     * 装钩子放在 mcp_start 之前,这样后面的启动日志也能进网络缓冲。
+     *
+     * ★ 这里**不能**用 ESP_ERROR_CHECK ★
+     *   日志服务是**调试设施**,不是关键路径 —— 它起不来(端口被占、
+     *   内存不够)不该把整台设备变成砖。失败只警告,MCP 照常服务。
+     */
+    {
+        char ips[IO_CFG_LOG_IPS_MAX] = {0};
+        esp_err_t lrc = ESP_ERR_INVALID_ARG;
+        if (io_cfg_get_log_ips(ips, sizeof(ips)) == ESP_OK && ips[0]) {
+            lrc = io_log_net_start(ips);
+            if (lrc != ESP_OK) {
+                ESP_LOGW(TAG, "network log unavailable (%s) -- UART logs still work",
+                         esp_err_to_name(lrc));
+            }
+        } else {
+            ESP_LOGI(TAG, "no log allowlist in NVS -- network log off");
+        }
+    }
+    /*
+     * MCP server 起不来**不能 abort**。
+     * abort = 立刻重启 = 再起不来 = 再重启 ⇒ 无限重启循环,设备彻底死掉,
+     * 连串口控制台都用不上(只有一行日志)。而 MCP 挂了的时候,USB 的
+     * HID/MSC 和 UART 控制台**都还活着** —— 那正是排查它需要的通道。
+     * 所以:记一条错误,设备继续跑。
+     * (这个坑踩过:cfg.max_open_sockets 设成 16,超过 IDF 的上限
+     *  (LWIP_MAX_SOCKETS-3)⇒ httpd_start 失败 ⇒ ESP_ERROR_CHECK ⇒ 砖。
+     *  同一个 sdkconfig 改大 LWIP_MAX_SOCKETS 才是正解。)
+     */
+    {
+        const esp_err_t mrc = io_mcp_start();
+        if (mrc != ESP_OK) {
+            ESP_LOGE(TAG, "MCP server failed to start (%s) -- continuing without it",
+                     esp_err_to_name(mrc));
+        }
+    }
     xTaskCreate(netboot_task, "netboot", 3072, NULL, 3, NULL);
     xTaskCreate(prov_task, "prov", 3072, NULL, 3, NULL);
 

@@ -3,8 +3,8 @@
 
 The contract this checks:
 
-  N1  tools/list returns exactly the six verb tools
-      (status / ls / read / capture / input / update)
+  N1  tools/list returns exactly the seven verb tools
+      (status / ls / read / capture / input / update / flash)
   N2  no old tool name survives in the list
   N3  every tool has a title and an outputSchema
   N4  unknown tool                                  -> JSON-RPC error -32602
@@ -51,7 +51,7 @@ OLD_TOOL_NAMES = [
     "list", "cap",
 ]
 
-NEW_TOOL_NAMES = ["status", "ls", "read", "capture", "input", "update"]
+NEW_TOOL_NAMES = ["status", "ls", "read", "capture", "input", "update", "flash"]
 
 
 def raw_post(ip, port, path, body, headers, host=None):
@@ -201,7 +201,7 @@ def main():
         except (ValueError, KeyError):
             tools = []
     names = [t.get("name") for t in tools]
-    check("N1", "tools/list returns exactly the six verb tools",
+    check("N1", "tools/list returns exactly the seven verb tools",
           sorted(names), sorted(NEW_TOOL_NAMES))
     stale = [n for n in OLD_TOOL_NAMES if n in names]
     check("N2", "no old tool name survives", stale, [])
@@ -263,6 +263,25 @@ def main():
     else:
         check("N8b", "read of an existing file -> ok:true", "no-file-to-test", True)
 
+    # ---- N18: a file over the inline threshold must come back as a URL ----
+    # Big content must not be inlined into the JSON-RPC response: the
+    # device's HTTP stack is a single task with a limited send buffer, and
+    # an oversized response stalls the whole MCP channel.
+    big = None
+    for e in (ls_files or []):
+        if e.get("name") and e.get("size", 0) > 64 * 1024:
+            big = e
+            break
+    if big:
+        st, env = call_tool(ip, port, "read", {"name": big["name"]}, 18)
+        res = env.get("result", {}) if isinstance(env, dict) else {}
+        sc18 = res.get("structuredContent", {})
+        check("N18a", "read of a big file -> ok:true", sc18.get("ok"), True)
+        check_true("N18b", "read of a big file -> url instead of inline bytes",
+                   bool(sc18.get("url")) and not sc18.get("bytes"), True)
+    else:
+        check("N18a", "read of a big file -> ok:true", "no-big-file-to-test", True)
+
     # ---- N9: capture (read-only) ----
     st, env = call_tool(ip, port, "capture", {}, 6)
     res = env.get("result", {}) if isinstance(env, dict) else {}
@@ -281,6 +300,12 @@ def main():
     st, env = call_tool(ip, port, "input", {}, 8)
     res = env.get("result", {}) if isinstance(env, dict) else {}
     check("N11", "input without an action -> isError:true", res.get("isError"), True)
+
+    # ---- N17: flash rejects a bad url BEFORE touching the network ----
+    # (no OTA is started: the argument check happens first)
+    st, env = call_tool(ip, port, "flash", {}, 17)
+    res = env.get("result", {}) if isinstance(env, dict) else {}
+    check("N17", "flash without a url -> isError:true", res.get("isError"), True)
 
     # ---- N12: GET /mcp -> 405 ----
     st, _, hdrs = raw_get(ip, port, "/mcp")
