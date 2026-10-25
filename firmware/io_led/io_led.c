@@ -223,6 +223,19 @@ esp_err_t io_led_init(void)
         s_chan = NULL;
         return err;
     }
+    /*
+     * ★ 必须 rmt_enable() ★
+     *   IDF 5.5 里 rmt_new_tx_channel() **不会**自动 enable 通道。
+     *   不 enable 的话事务永远不开始 —— 表现是 rmt_tx_wait_all_done() 报
+     *   "flush timeout"(第一次踩到就是这个,灯一点反应都没有)。
+     */
+    err = rmt_enable(s_chan);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "rmt_enable failed: %s", esp_err_to_name(err));
+        rmt_del_channel(s_chan);
+        s_chan = NULL;
+        return err;
+    }
 
     rmt_simple_encoder_config_t enc = {
         .callback = ws2812_encode_cb,
