@@ -465,6 +465,14 @@ static io_tool_out_t tool_status(void)
     /* 单例槽状态:agent 轮询它就知道后台动作跑完没有 */
     cJSON_AddBoolToObject(o, "busy", s_op_busy);
 
+    /*
+     * 设备侧内存余量 —— "有限产能"最直接的量化指标。
+     * free_heap 是当前余量,min_free_heap 是**历史最低点**(最坏情况下的余量)。
+     * 两个数一起看,就知道这台设备离 OOM 还有多远。
+     */
+    cJSON_AddNumberToObject(o, "free_heap", (double)esp_get_free_heap_size());
+    cJSON_AddNumberToObject(o, "min_free_heap", (double)esp_get_minimum_free_heap_size());
+
     /* 设备状态码:一个 int(语义见 README 决策表"LED 语义"那一行) */
     cJSON_AddNumberToObject(o, "led", io_led_state());
 
