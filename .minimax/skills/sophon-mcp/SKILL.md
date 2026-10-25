@@ -88,6 +88,29 @@ and joins `224.0.0.251` itself.
 If it prints nothing: the dongle is unpowered, it is on a different subnet, or
 its mDNS responder is down (check `status.led` — see step 2).
 
+### 1b. Make the MCP server point at it
+
+The MCP client config carries the device URL, so a changed IP leaves it
+pointing at a dead address — every sophon tool call then fails with a
+connection error. Fix it in one command:
+
+```bash
+python scripts/sophon_mcp_config.py      # discover + compare + update .mcp.json
+```
+
+It rewrites the `url` of the `sophon` entry in **this workspace's**
+`.mcp.json` (not the global one) when it disagrees with what mDNS found, and
+says so when it changes nothing. `--check` reports without writing.
+
+**The url is read once when the MCP client starts.** After a rewrite the
+*current* connection does not switch over — the new address takes effect
+after the MCP connection is restarted (or in the next session). Say that
+plainly instead of retrying the old url.
+
+**Only touch the workspace's `.mcp.json`.** The global `~/.minimax/mcp.json`
+is shared across projects and its entries are disabled by design; leave it
+alone.
+
 ### 2. Health check before anything else
 
 ```bash
