@@ -2,12 +2,11 @@ menu "Sophon hardware"
 
     config SOPHON_LED_WS2812
         bool "Drive an on-board WS2812 LED as a status signal"
-        default y
+        default n
         help
             The status LED is an **optional debug signal**, not a data path
             (see the README decision table "LED 语义"). Enable this to light
-            the on-board WS2812 of a DevKitC-1 (GPIO48) and show the device
-            state at a glance:
+            the on-board WS2812 and show the device state at a glance:
 
               green solid        ready (network up, MCP serving)
               blue fast blink    booting (just powered on, not connected yet)
@@ -15,8 +14,19 @@ menu "Sophon hardware"
               blue solid         an action is running
               red solid          the last injection self-test failed
 
+            ★ 默认关(n) ★
+              这是一块**通用**开关,不同板子的 LED 差别很大:dev kit 是
+              GPIO48 上**单颗大颗粒** WS2812(实测颜色字节序 GRB、亮度 24);
+              量产 dongle 的 LED 还没确认(可能没有、可能引脚不同)。
+              贸然开 ⇒ 万一 GPIO48 其实是屏的引脚,800 kHz 的位流会干扰屏幕。
+              ⇒ 确认了 LED 的型号/引脚/数量再开,改完 `idf.ps1 reconfigure`
+              (**注意**:kconfig 保留 sdkconfig 里已有的值,改 default 不生效,
+              要直接改 sdkconfig)。
+
             Turn this OFF for a production dongle whose LED pin is used for
-            something else (or which has no addressable LED at all).
+            something else (or which has no addressable LED at all) — the
+            status code is still computed and reported by `status.led`,
+            it just doesn't light anything.
 
     config SOPHON_LED_GPIO
         int "WS2812 data GPIO"

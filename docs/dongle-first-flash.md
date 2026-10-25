@@ -59,7 +59,34 @@ python tools\provision.py --ssid <SSID> --pass <PASS> --name <设备名> --log-i
 - 写 `DEV.CFG` 到盘上,设备**每 5 秒**看一眼,变了就应用(首次约 5~10 秒生效)
 - `logips=` 是 WiFi 日志通道的**源 IP 授权表**(不配就不开日志,零开销)
 
-## 4. 装机
+## 4. 下发 watcher 脚本(★ 漏了这步,注入链路不可用 ★)
+
+**出厂镜像里没有 watcher 脚本。**
+2026-10-22 的 T2 改动:watcher 是"AI 现场就能生成"的文件,烤进固件是纯浪费
+⇒ 出厂镜像只**预留**空槽位(簇链 + 目录项进镜像,内容不进镜像,槽位容量在固件里是 0 字节)。
+槽位内容来自 **flash 里的 payload 快照**(script0/script1),开机时才铺到 RAM disk。
+
+所以刷完机必须下发一次:
+
+```bash
+python - <<'PY'
+import base64, json
+data = open(r"watcher\watch.ps1", "rb").read()
+json.dump({"slot": 0, "base64": base64.b64encode(data).decode()},
+          open("update_args.json", "w"))
+PY
+python .minimax\skills\sophon-mcp\scripts\mcp_call.py --endpoint <URL> \
+       --tool update --args @update_args.json
+```
+
+**注意**:`update` 存的是 flash,**RAM disk 上的槽位要到下次开机才更新**
+(返回里的 note 会写明 "stored in flash only")。
+⇒ 紧接着做一次 **WiFi OTA 刷写**(第 5 步第 11 项):既验证了 OTA,又顺带重启,
+两件事一次做完。**新板子没有 UART,OTA 是唯一的重启手段。**
+
+---
+
+## 5. 装机
 
 把 dongle 从产线电脑拔下,插到**目标机**。
 
