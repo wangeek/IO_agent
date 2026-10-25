@@ -134,18 +134,18 @@ esp_err_t io_launcher_focus_reset(void)
 
 static esp_err_t inject_command_ime(const char *cmd, bool shift_ime);
 
-/* 注入一条命令:宏 → 打字 → 回车。 */
-static esp_err_t inject_command(const char *cmd)
-{
-    return inject_command_ime(cmd, false);
-}
-
 /*
  * 同上,但可以在**打字之前**先单按一次 Shift(切输入法态)。
  *
  * 关键:Shift 必须作用在**接收这次打字的那个运行框**的上下文上 ——
  * 输入态是每个输入框上下文各自一份,而 Win+R 每次都新开一个框。
  * 所以顺序必须是:开框(Win+R)→ Shift → 打字,不能先 Shift 再开框。
+ *
+ * ★ 什么时候该带 Shift ★
+ *   我们每次都**新开框**(focus_reset 的 Win+R)⇒ 新框 = 该系统的默认态。
+ *   Shift 是 toggle,方向取决于默认态(中文默认 ⇒ 切到英文;英文默认 ⇒ 切到中文)。
+ *   ⇒ 固定带 Shift 是 50/50。**用 probe_ime_strategy() 探出该用哪种**,
+ *     别在这里猜。
  */
 static esp_err_t inject_command_ime(const char *cmd, bool shift_ime)
 {
@@ -187,16 +187,20 @@ bool io_launcher_last_selftest_ok(void)
  *    同一个 2 秒桶 ⇒ 不会误判。若目标机没写过这文件,则是"从无到有",
  *    同样算数。)
  */
-static bool inject_selftest(void)
+/*
+ * 打**一次**探针命令,等 INJ.TXT 被刷新。
+ *
+ * @param shift_ime 打字前先按一次 Shift(切输入法态)
+ * @return true = 这条命令以纯 ASCII 打进去了并跑起来了
+ */
+static bool probe_once(bool shift_ime)
 {
     /* 注入前的基线:文件在不在、在的话它当时的时间戳是多少 */
     io_file_info_t before;
     const bool had_before = io_disk_find_file(INJ_FILE, &before);
 
-    ESP_LOGI(TAG, "injection self-test: typing the marker command ...");
-    if (inject_command(SELFTEST_CMD) != ESP_OK) {
-        ESP_LOGE(TAG, "injection self-test: could not type the command");
-        s_last_selftest_ok = false;
+    if (inject_command_ime(SELFTEST_CMD, shift_ime) != ESP_OK) {
+        ESP_LOGE(TAG, "probe: could not type the marker command");
         return false;
     }
     for (int i = 0; i < INJ_POLL_TRIES; i++) {
@@ -208,15 +212,70 @@ static bool inject_selftest(void)
         if (had_before && now.mtime == before.mtime) {
             continue;                          /* 还是上一次留下的那个,不算数 */
         }
-        ESP_LOGI(TAG, "injection self-test PASSED (%s refreshed, mtime %lld)",
-                 INJ_FILE, (long long)now.mtime);
-        s_last_selftest_ok = true;
+        ESP_LOGI(TAG, "probe OK (%s refreshed, mtime %lld, shift=%d)",
+                 INJ_FILE, (long long)now.mtime, (int)shift_ime);
         return true;
     }
-    ESP_LOGE(TAG, "injection self-test FAILED (%s never refreshed) -- "
-             "HID injection did not reach the host", INJ_FILE);
-    s_last_selftest_ok = false;
     return false;
+}
+
+/*
+ * ★ 探出"这台机器上,新开的运行框要怎么弄才是英文态" ★
+ *
+ * 为什么必须探、而不是固定按 Shift:
+ *   输入态是**每个输入框上下文各自一份**,而我们每次注入都**新开一个框**
+ *   (focus_reset 里的 Win+R)⇒ 新框 = 该系统的**默认态**。
+ *   �� Shift 是 toggle,方向取决于默认态:
+ *     · 默认态是中文(本机)⇒ Shift 一次 ⇒ 英文 ✅
+ *     · 默认态是英文(英文系统)⇒ Shift 一次 ⇒ 中文 ❌
+ *   固定按 Shift 就成了 50/50。实测踩过:2026-10-25 用户在主力机上看到
+ *   launch_watcher 的命令**原样躺在 Win+R 框里**(中文态,没执行)。
+ *
+ * 为什么探针**可以试两次**(不违反"注入零重试"那条纪律):
+ *   探针命令只往共享盘写**自己的标记文件 INJ.TXT**,不碰用户环境;
+ *   那条纪律针对的是**动作**(注入按键、拉起进程)。探针重试是安全的。
+ *   ⇒ 探两种策略(带 Shift / 不带),哪种能把 INJ.TXT 写出来就用哪种。
+ */
+static bool probe_ime_strategy(bool *use_shift)
+{
+    for (int i = 0; i < 2; i++) {
+        const bool shift = (i == 0);
+        ESP_LOGI(TAG, "IME probe: try %s", shift ? "new box + Shift" : "new box, no Shift");
+        if (probe_once(shift)) {
+            *use_shift = shift;
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * 注入自检:确认 HID 注入链路真的到达了目标机。
+ *
+ * ★ 判据必须是"**这次**写的",不能只是"盘上有" ★
+ *   INJ.TXT 留在 RAM disk 里(断电即失,但同一次开机内一直在),上一次
+ *   成功留下的那个还在。**只判存在性** ⇒ 第二次自检会在 1 秒后直接报
+ *   PASSED,哪怕这次注入根本没到达目标机。
+ *   这正好打在"IME 态探针"上(探针的职责是判定当前是中文态还是英文态),
+ *   判错 ⇒ 后面打的全是乱码,而且**看起来一切正常**。
+ *
+ *   所以:注入前记下 INJ.TXT 的最后写入时间,要求**变了**才算数。
+ *   (FAT 时间戳 2 秒粒度;一次自检本身要 ~7 秒,两次自检不可能落进
+ *    同一个 2 秒桶 ⇒ 不会误判。若目标机没写过这文件,则是"从无到有",
+ *    同样算数。)
+ */
+static bool inject_selftest(void)
+{
+    bool use_shift = true;
+    ESP_LOGI(TAG, "injection self-test: probing the IME state ...");
+    if (!probe_ime_strategy(&use_shift)) {
+        ESP_LOGE(TAG, "injection self-test FAILED -- could not get a command through "
+                 "in English (tried: new box + Shift, new box without Shift)");
+        s_last_selftest_ok = false;
+        return false;
+    }
+    s_last_selftest_ok = true;
+    return true;
 }
 
 /* 注入自检 = **IME 态探针**。
@@ -248,12 +307,15 @@ esp_err_t io_launcher_ime_toggle(void)
  * 拉起 watcher(远程入口)。
  *
  * 流程:**探针 → 启动命令**。
- *   1. 先打一次自检当探针。INJ.TXT 出现 = IME 当时在英文态 ✅。
- *   2. 探针通过 → 再打启动命令(这时的 IME 状态已知是英文态)→ 等 CAP.TXT。
- *   3. 探针没过 → **不自动重试**(注入是破坏性操作,重试=持续破坏),
- *      返回错误并说明原因,由调用方决定要不要补一次 ime_toggle 再来。
+ *   1. 先打探针(自检命令)**探出这台机器上"新开的运行框"要怎么弄才是英文态**
+ *      —— 探针只写共享盘上自己的标记文件,不动用户环境,所以可以试两次
+ *      (带 Shift / 不带),自动适配"默认态是中文"和"默认态是英文"两种系统。
+ *   2. 用探出来的那套策略,打真正的启动命令 → 等 CAP.TXT。
+ *   3. 探针两次都失败 ⇒ **不打启动命令**(免得白敲键盘),返回错误并说明原因。
  *
- * @param ime_toggle  true = 探针之前先按一次 Shift 切输入法态(盲切,50/50)
+ * @param ime_toggle  true = **跳过探测**,强制"新框 + Shift"一次
+ *                    (给已经知道自己默认态是中文的调用方用);
+ *                    false(默认) = 自动探测。
  */
 esp_err_t io_launcher_run_launch(bool ime_toggle)
 {
@@ -263,9 +325,20 @@ esp_err_t io_launcher_run_launch(bool ime_toggle)
         return ESP_OK;
     }
 
-    /* 一条命令 = 开框 → (可选)Shift 切输入法态 → 打字 → 回车。
+    /* 探针:探出该用哪种 IME 策略。探针无害(只写自己的标记文件)。 */
+    bool use_shift = true;
+    if (ime_toggle) {
+        ESP_LOGI(TAG, "IME strategy forced: new box + Shift");
+        use_shift = true;
+    } else if (!probe_ime_strategy(&use_shift)) {
+        ESP_LOGE(TAG, "IME probe failed on both strategies -- the command cannot be "
+                 "typed in English on this host; NOT launching the watcher");
+        return ESP_ERR_TIMEOUT;
+    }
+
+    /* 一条命令 = 开框 → (按探出来的策略切输入法态) → 打字 → 回车。
      * Shift 必须落在**接收这次打字的那个框**上(输入态是每个框一份)。 */
-    ESP_RETURN_ON_ERROR(inject_command_ime(LAUNCH_CMD, ime_toggle),
+    ESP_RETURN_ON_ERROR(inject_command_ime(LAUNCH_CMD, use_shift),
                         TAG, "注入启动命令失败");
 
     for (int i = 0; i < CAP_POLL_TRIES; i++) {
@@ -282,18 +355,20 @@ esp_err_t io_launcher_run_launch(bool ime_toggle)
     return ESP_ERR_TIMEOUT;
 }
 
-/* 一轮:自检 → 命令 → 等 CAP.TXT。 */
+/* 一轮:探针(顺带探出 IME 策略) → 命令 → 等 CAP.TXT。 */
 static bool try_launch_once(void)
 {
     io_hid_ep_probe("before-inject");
-    /* 阶段 1:自检(= IME 态探针)。不通就别去拉起 watcher(免得白敲键盘) */
-    if (!inject_selftest()) {
+    /* 阶段 1:探针(= IME 态探针)。不通就别去拉起 watcher(免得白敲键盘) */
+    bool use_shift = true;
+    if (!probe_ime_strategy(&use_shift)) {
         return false;
     }
 
-    /* 阶段 2:真正的启动命令(探针过了,此时 IME 已知在英文态) */
+    /* 阶段 2:真正的启动命令(用探出来的那套 IME 策略) */
     ESP_LOGI(TAG, "launching watcher on the host ...");
-    ESP_RETURN_ON_ERROR(inject_command(LAUNCH_CMD), TAG, "注入启动命令失败");
+    ESP_RETURN_ON_ERROR(inject_command_ime(LAUNCH_CMD, use_shift),
+                        TAG, "注入启动命令失败");
     for (int i = 0; i < CAP_POLL_TRIES; i++) {
         vTaskDelay(pdMS_TO_TICKS(CAP_POLL_MS));
         if (cap_present()) {
