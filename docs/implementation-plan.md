@@ -148,6 +148,7 @@ Sophon/
 | `SNAP_R.JPG` | 53,794 B | 变化 ROI 裁剪帧,实测像素 **427×285**(与 DIFF.IDX 包围盒精确吻合) |
 | `SNAP.IDX` | 220 B | `{"name":"SNAP_P.JPG","len":95232,"seq":5,"cursor":[400,300],"roi":{...}}` |
 | `DIFF.IDX` | 146 B | `{"seq":5,"grid":[60,34],"rects":[...]}` |
+| `SCRN.BMP` | 38,454 B | dongle 自带 0.96" 屏的缩略图,160×80 **24bpp BMP**(不是 JPEG:GDI+ 存 BMP 零逐像素开销,而设备端要解 JPEG 就得付熵解码的代价) |
 
 - **固件侧写盘统计同步上涨**:`written=25 blocks` → **`written=2355 blocks / 1,205,760 bytes`**
   (每块 512 B 精确对齐)→ 帧确实经 MSC 落进了 ESP32 的 PSRAM,不只是主机侧缓存。
@@ -277,6 +278,7 @@ Sophon/
 | `CMD\*.cmd` | watcher | ESP32 | 待执行命令(JSON 单行) |
 | `RESP\*` | watcher | ESP32 | 执行结果 |
 | `CAP.TXT` | watcher | ESP32 | 能力自陈(os/arch/admin/net/screen/watcher_ver) |
+| `SCRN.BMP` | watcher | ESP32 | **dongle 自带屏**的缩略图:160×80 24bpp BMP(BITMAPINFOHEADER/BI_RGB)。写方用 GDI+ 缩放+Save(零逐像素开销),读方只做 BGR888→RGB565 转换(12800 像素,约 1 ms)。**不用 JPEG**:编码的活儿交给有 GDI+ 的目标机,设备只做颜色转换 |
 
 ### 4.2 帧率与带宽约定(定案 2 落地)
 

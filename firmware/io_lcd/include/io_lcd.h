@@ -104,6 +104,17 @@ esp_err_t io_lcd_clear(void);
 esp_err_t io_lcd_fill_rect(int x, int y, int w, int h, uint16_t rgb565);
 
 /**
+ * 把一个 BMP 解码进画布(底图),并把"字幕"(最近一次 io_lcd_print 的文字)
+ * 压在图上面重画一遍。**不刷屏** —— 要看到效果还得 io_lcd_flush()。
+ *
+ * 支持 BITMAPINFOHEADER + BI_RGB + 24/32 bpp(目标机 GDI+ 存出来的就是这种)。
+ * 为什么不用 JPEG:目标机那边有 GDI+,存 BMP 是**零逐像素开销**的;
+ * 而 JPEG 要在设备上做熵解码 —— 那才是贵的那个。
+ * 设备这边只做 BGR888→RGB565 转换(12800 次,约 1 ms)。
+ */
+esp_err_t io_lcd_load_bmp(const uint8_t *data, size_t len);
+
+/**
  * 在画布上画一行 ASCII(6x8 格子,5x7 字模)。
  * 超出右边界的部分被截断。只改画布。
  *

@@ -77,6 +77,13 @@ static const char *TAG = "io_lcd";
 #define LCD_LINE_MAX    160
 #define LCD_LINE_BYTES  (LCD_LINE_MAX * 2)
 
+/* "字幕"层:最近一次 io_lcd_print 的文字,缩略图来了以后要压在图上面重画。 */
+#define LCD_OVERLAY_MAX 192
+
+/* 文字左上角留白。 */
+#define LCD_TEXT_X      2
+#define LCD_TEXT_Y      2
+
 static spi_device_handle_t s_dev;
 static bool     s_ready;
 static int      s_width  = IO_LCD_PANEL_W_PORTRAIT;
@@ -85,6 +92,10 @@ static int      s_colstart = 26;
 static int      s_rowstart = 1;
 static uint16_t *s_fb;          /* 画布,PSRAM */
 static uint8_t *s_line;         /* 字节交换后的一行,内部 RAM */
+static char     s_overlay[LCD_OVERLAY_MAX];   /* 字幕:最近一次 print 的文字 */
+static uint16_t s_overlay_fg = IO_LCD_WHITE;
+static uint16_t s_overlay_bg = IO_LCD_BLACK;
+static bool     s_overlay_set;
 
 /* ------------------------------------------------------------------ */
 /* 底层:发命令 / 发数据                                              */
@@ -362,14 +373,12 @@ int io_lcd_text(int x, int y, const char *s, uint16_t fg, uint16_t bg)
     return drawn;
 }
 
-int io_lcd_print(const char *s, uint16_t fg, uint16_t bg)
+/*
+ * 画一段文字到画布(自动按屏宽折行,'\n' 强制换行)。**不清屏**。
+ * @return 画了几行
+ */
+static int draw_text_block(const char *s, uint16_t fg, uint16_t bg)
 {
-    if (!s_ready || s_fb == NULL) {
-        return -1;
-    }
-    /* 清画布 */
-    io_lcd_clear();
-
     const int cols = s_width / IO_LCD_FONT5X7_CELL_W;
     const int rows = s_height / IO_LCD_FONT5X7_CELL_H;
     int row = 0, col = 0;
@@ -392,13 +401,116 @@ int io_lcd_print(const char *s, uint16_t fg, uint16_t bg)
                 }
             }
             char ch[2] = { *p, 0 };
-            io_lcd_text(col * IO_LCD_FONT5X7_CELL_W,
-                        row * IO_LCD_FONT5X7_CELL_H, ch, fg, bg);
+            io_lcd_text(LCD_TEXT_X + col * IO_LCD_FONT5X7_CELL_W,
+                        LCD_TEXT_Y + row * IO_LCD_FONT5X7_CELL_H, ch, fg, bg);
             col++;
         }
     }
-    io_lcd_flush();
     return row + 1;
+}
+
+int io_lcd_print(const char *s, uint16_t fg, uint16_t bg)
+{
+    if (!s_ready || s_fb == NULL) {
+        return -1;
+    }
+    /* 清画布 */
+    io_lcd_clear();
+
+    const int lines = draw_text_block(s, fg, bg);
+
+    /*
+     * 记住这段文字。
+     *
+     * 为什么:缩略图是"底图",agent 写的这段是"字幕" —— 底图换新的时候,
+     * 字幕要**压在图上面**重画一遍,否则 agent 写的话两秒就被帧刷掉了。
+     */
+    if (s != NULL) {
+        strncpy(s_overlay, s, sizeof(s_overlay) - 1);
+        s_overlay[sizeof(s_overlay) - 1] = '\0';
+        s_overlay_fg = fg;
+        s_overlay_bg = bg;
+        s_overlay_set = true;
+    } else {
+        s_overlay_set = false;
+    }
+
+    io_lcd_flush();
+    return lines;
+}
+
+/* ------------------------------------------------------------------ */
+/* BMP 解码(底图)                                                     */
+/* ------------------------------------------------------------------ */
+
+static uint16_t rd16le(const uint8_t *p)
+{
+    return (uint16_t)(p[0] | (p[1] << 8));
+}
+
+static uint32_t rd32le(const uint8_t *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+esp_err_t io_lcd_load_bmp(const uint8_t *data, size_t len)
+{
+    if (!s_ready || s_fb == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* BMP 文件头 14 字节 + BITMAPINFOHEADER 40 字节 */
+    if (data == NULL || len < 54) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (data[0] != 'B' || data[1] != 'M') {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    const uint32_t data_off = rd32le(data + 10);
+    const int32_t  w        = (int32_t)rd32le(data + 18);
+    const int32_t  h        = (int32_t)rd32le(data + 22);
+    const uint16_t bpp      = rd16le(data + 28);
+    const uint32_t comp     = rd32le(data + 30);
+
+    if (comp != 0) {                    /* 只支持 BI_RGB(未压缩) */
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    if (bpp != 24 && bpp != 32) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    if (w <= 0 || h == 0) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    const int bytes_pp = (int)(bpp / 8);
+    const int stride   = ((int)w * bytes_pp + 3) & ~3;   /* 每行 4 字节对齐 */
+    const int rows     = (h < 0) ? -h : h;                /* 负高度 = 自上而下 */
+    const bool top_down = (h < 0);
+
+    if ((size_t)data_off + (size_t)stride * (size_t)rows > len) {
+        return ESP_ERR_INVALID_SIZE;    /* 文件被截断(宿主正写到一半) */
+    }
+
+    for (int y = 0; y < rows && y < s_height; y++) {
+        /* BMP 默认自下而上存 ⇒ 目标第 y 行取源里的 rows-1-y 行 */
+        const int src_row = top_down ? y : (rows - 1 - y);
+        const uint8_t *src = data + data_off + (size_t)src_row * stride;
+        uint16_t *dst = s_fb + (size_t)y * s_width;
+        for (int x = 0; x < w && x < s_width; x++) {
+            /* BMP 内存里是 BGR */
+            const uint8_t b = src[x * bytes_pp + 0];
+            const uint8_t g = src[x * bytes_pp + 1];
+            const uint8_t r = src[x * bytes_pp + 2];
+            dst[x] = (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+        }
+    }
+
+    /* 字幕压在图上面重画一遍 */
+    if (s_overlay_set) {
+        draw_text_block(s_overlay, s_overlay_fg, s_overlay_bg);
+    }
+    return ESP_OK;
 }
 
 esp_err_t io_lcd_flush(void)
@@ -560,6 +672,8 @@ int      io_lcd_text(int x, int y, const char *s, uint16_t fg, uint16_t bg)
 { (void)x; (void)y; (void)s; (void)fg; (void)bg; return -1; }
 int      io_lcd_print(const char *s, uint16_t fg, uint16_t bg)
 { (void)s; (void)fg; (void)bg; return -1; }
+esp_err_t io_lcd_load_bmp(const uint8_t *d, size_t n)
+{ (void)d; (void)n; return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t io_lcd_blank(void)                { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t io_lcd_selftest(void)             { return ESP_ERR_NOT_SUPPORTED; }
 

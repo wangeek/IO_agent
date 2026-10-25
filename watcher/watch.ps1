@@ -11,6 +11,9 @@
       SNAP.IDX   - current frame name + length + sequence (double-read safe)
       DIFF.IDX   - changed-region list (16x16 block hash), JSON single line
       SNAP_R.JPG - JPEG cropped to the changed region (N1: crop happens here)
+      SCRN.BMP   - 160x80 BMP thumbnail for the dongle's own 0.96" screen
+                  (BMP, not JPEG: GDI+ encodes it for free, and the device
+                   would otherwise have to entropy-decode a JPEG every frame)
 
     Rules that are not negotiable:
       - Never write to the target machine's own disk. Everything goes to the
@@ -67,6 +70,11 @@ $FILE_ROI     = 'SNAP_R.JPG'
 $FILE_IDX     = 'SNAP.IDX'
 $FILE_DIFF    = 'DIFF.IDX'
 $FILE_CAP     = 'CAP.TXT'
+# The dongle's own 0.96" screen (ST7735S, landscape 160x80). We hand it a
+# **BMP**, not a JPEG -- see Get-BmpBytes for why.
+$FILE_THUMB   = 'SCRN.BMP'
+$THUMB_W      = 160
+$THUMB_H      = 80
 $DIR_CMD      = 'CMD'
 $DIR_RESP     = 'RESP'
 
@@ -208,6 +216,28 @@ function Draw-CursorMarker {
         finally { $brush.Dispose() }
     } finally {
         $g.Dispose()
+    }
+}
+
+function Get-BmpBytes {
+    <# Encode a bitmap as a 24bpp BMP (BITMAPINFOHEADER, BI_RGB).
+
+       Why a BMP and not a JPEG: the dongle has a 0.96" ST7735S screen, and
+       whatever we put on the shared disk, the device has to turn into pixels.
+       GDI+ encodes a BMP with **zero per-pixel work in this script** (just a
+       Save), while a JPEG would cost the *device* an entropy decode every
+       frame -- and the device is the scarce side (240 MHz, 512 KB internal
+       RAM). The device converts BGR888 -> RGB565 itself: 12800 pixels, ~1 ms.
+
+       24bpp, not 32: GDI+ writes 24bpp when the bitmap is Format24bppRgb, and
+       38 KB per frame is already 1.5x the bare RGB565 size. #>
+    param([System.Drawing.Image] $Image)
+    $ms = New-Object System.IO.MemoryStream
+    try {
+        $Image.Save($ms, [System.Drawing.Imaging.ImageFormat]::Bmp)
+        return $ms.ToArray()
+    } finally {
+        $ms.Dispose()
     }
 }
 
@@ -456,6 +486,17 @@ while ($true) {
 
             $bytes = Get-JpegBytes $preview $PREVIEW_Q
             Write-Atomic (Join-Path $driveRoot $FILE_PREVIEW) $bytes
+
+            # The dongle's own screen: a 160x80 BMP thumbnail.
+            # Write-Atomic (temp file + rename) so the device never sees a
+            # half-written file -- FAT has no atomic replace.
+            $thumb = Scale-Bitmap $full $THUMB_W $THUMB_H
+            try {
+                $thumbBytes = Get-BmpBytes $thumb
+                Write-Atomic (Join-Path $driveRoot $FILE_THUMB) $thumbBytes
+            } finally {
+                $thumb.Dispose()
+            }
 
             # diff over the preview grid. The very first frame has no
             # baseline, so it is not a diff - it only seeds the baseline.

@@ -35,6 +35,7 @@ set(EXTRA_COMPONENT_DIRS
     "${CMAKE_CURRENT_LIST_DIR}/io_ota"
     "${CMAKE_CURRENT_LIST_DIR}/io_led"
     "${CMAKE_CURRENT_LIST_DIR}/io_lcd"
+    "${CMAKE_CURRENT_LIST_DIR}/io_screen"
     "${CMAKE_CURRENT_LIST_DIR}/io_mcp"
 )
 

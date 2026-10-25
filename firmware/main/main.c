@@ -28,6 +28,7 @@
 #include "io_log.h"
 #include "io_led.h"
 #include "io_lcd.h"
+#include "io_screen.h"
 #include "io_mcp.h"
 
 static const char *TAG = "sophon";
@@ -199,21 +200,15 @@ static void lcd_task(void *arg)
     }
     {
         const char *ip = io_net_ip();
-        char ipbuf[48];
-        snprintf(ipbuf, sizeof(ipbuf), "IP %s", ip ? ip : "--");
 
         /* 状态码 → 文字(与 README 决策表「LED 语义」同一张表) */
         static const char *const state_name[] = {
             "READY", "BOOT", "NO NET", "BUSY", "FAULT"
         };
         const int st = io_led_state();
-        const uint16_t state_color = (st == IO_LED_FAULT) ? IO_LCD_RED
-                                         : (st == IO_LED_READY) ? IO_LCD_GREEN
-                                         : IO_LCD_WHITE;
+        const char *state = state_name[(st >= 0 && st <= IO_LED_FAULT) ? st : 0];
 
         /*
-         * 常驻信息屏:站在目标机前的人能直接看见状态、抄走 IP。
-         *
          * 底部那条彩条是**诊断条**:它让"一次 glance"就能验三件事 ——
          *   ① 字有没有出来(文字渲染通没通)
          *   ② 红蓝有没有反(BGR 位对不对)
@@ -227,15 +222,27 @@ static void lcd_task(void *arg)
             IO_LCD_YELLOW, IO_LCD_MAGENTA, IO_LCD_CYAN, IO_LCD_BLACK,
         };
 
-        io_lcd_clear();
-        io_lcd_text(2, 2, "SOPHON", IO_LCD_WHITE, IO_LCD_BLACK);
-        io_lcd_text(2, 11, ipbuf, IO_LCD_WHITE, IO_LCD_BLACK);
-        io_lcd_text(2, 20, state_name[st >= 0 && st <= IO_LED_FAULT ? st : 0],
-                    state_color, IO_LCD_BLACK);
+        /*
+         * 信息屏用 io_lcd_print 而不是直接画 —— 它会把这段文字**记成"字幕"**,
+         * 以后目标机的缩略图来了,这段会压在图上面重画(不然 caption 两秒
+         * 就被帧刷掉了)。
+         */
+        char info[96];
+        snprintf(info, sizeof(info), "SOPHON\nIP %s %s", ip ? ip : "--", state);
+        io_lcd_print(info, IO_LCD_WHITE, IO_LCD_BLACK);
         for (int i = 0; i < 8; i++) {
             io_lcd_fill_rect(i * 20, 72, 20, 8, swatch[i]);
         }
         io_lcd_flush();
+
+        /*
+         * 内容层起来:盯共享盘上的 SCRN.BMP,变了就把目标机的画面画上来。
+         */
+        const esp_err_t ssc = io_screen_start();
+        if (ssc != ESP_OK) {
+            ESP_LOGW(TAG, "screen content layer unavailable (%s)",
+                     esp_err_to_name(ssc));
+        }
     }
     vTaskDelete(NULL);
 }
