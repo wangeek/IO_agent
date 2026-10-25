@@ -28,16 +28,28 @@ menu "Sophon hardware"
 
     config SOPHON_LED_COUNT
         int "Number of WS2812 pixels on the bus"
-        default 3
+        default 1
         depends on SOPHON_LED_WS2812
         help
             All pixels of one strip must be driven in a single RMT transaction
             (WS2812 latches per pixel, so a gap in the bit stream resets it).
 
             **数错灯珠数会"颜色对不齐"**:少发一颗,后面的灯珠就收不到数据,
-            保持旧值。发多了则后面的数据没人收。
+            保持旧值;发多了则多出来的数据没人收。
 
-            不确定就跑一次 UART 控制台的 `led test`:它会逐颗点亮(数灯珠),
-            再全体依次红/绿/蓝/白(验颜色字节序)。
+            2026-10-25 实测这块板子:**只有 1 颗**可寻址的大颗粒 WS2812
+            (GPIO48,单颗,非常亮)。板上另外 3 个 RGB 小灯珠(红/绿/蓝各一)
+            是**普通指示灯,不是可寻址外设**,不受我们控制,别混。
+
+            不确定就跑一次 UART 控制台的 `led test`:它会全体依次
+            红/绿/蓝/白(若"红"显示成蓝,说明颜色字节序反了)。
+
+    config SOPHON_LED_BRIGHTNESS
+        int "WS2812 brightness (0-255)"
+        default 24
+        depends on SOPHON_LED_WS2812
+        help
+            实测:128 在这块板上"亮得像小手电筒"(近距离看很刺眼)。
+            24 ≈ 9%,远看清晰、近看不刺眼。要更亮自己调。
 
 endmenu

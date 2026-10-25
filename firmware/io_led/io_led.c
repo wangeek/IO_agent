@@ -67,23 +67,36 @@ void io_led_busy_release(void)
 #define LED_RESET_TICKS     400     /* 50 µs 复位(要求 >50 µs) */
 /* 一个像素 = 3 字节 = 24 bit,每 bit 一个 RMT symbol */
 #define LED_WORDS_PER_PX    24
-/* 末尾 +1 是复位符号。★ mem_block_symbols **必须是偶数**(IDF 的硬要求),
- *   所以 +2 而不是 +1。 */
-#define LED_WORDS_MAX       (LED_COUNT * LED_WORDS_PER_PX + 2)
+/* 末尾 +1 是复位符号 */
+#define LED_WORDS_NEEDED    (LED_COUNT * LED_WORDS_PER_PX + 1)
+/*
+ * RMT 对 mem_block_symbols 有两个硬要求(见 esp_driver_rmt/src/rmt_tx.c):
+ *   ① 必须是**偶数**;
+ *   ② 必须 **>= SOC_RMT_MEM_WORDS_PER_CHANNEL(ESP32-S3 上是 64)**。
+ * 单颗灯实际只要 25 个 symbol,但下限是 64 ⇒ 取"实际需要"和"硬件下限"的较大者,
+ * 再对齐到偶数。踩过:COUNT=1 时算出 26 < 64 ⇒ rmt_new_tx_channel 直接失败
+ * ⇒ 灯整个不工作(而 status.led 仍然照算,更显得"功能开了却没反应")。
+ */
+#define LED_RMT_MIN_SYMBOLS 64
+#define LED_WORDS_MAX       ((LED_WORDS_NEEDED > LED_RMT_MIN_SYMBOLS) \
+                             ? ((LED_WORDS_NEEDED + 1) & ~1u) \
+                             : LED_RMT_MIN_SYMBOLS)
 
 /* 刷新节拍与闪烁周期 */
 #define LED_TICK_MS         50
 #define LED_BLINK_FAST_MS   100     /* 启动中:亮 100 / 灭 100 */
 #define LED_BLINK_SLOW_MS   500     /* 网络未就绪:亮 500 / 灭 500 */
 
-/* 亮度:全亮 255 太刺眼,半亮够看 */
-#define LED_BRIGHT          128
+/* 亮度:可配。实测 128 在这块板上"亮得像小手电筒",24 ≈ 9% 远看清晰近看不刺眼 */
+#define LED_BRIGHT          CONFIG_SOPHON_LED_BRIGHTNESS
+/* 黄:红分量按亮度比例给(硬编码 100 会在低亮度下反而不成比例) */
+#define LED_BRIGHT_Y        (CONFIG_SOPHON_LED_BRIGHTNESS * 4 / 5)
 
 /* WS2812 的字节序是 **G,R,B** */
 static const uint8_t s_color[5][3] = {
     {LED_BRIGHT, 0, 0},         /* 0 就绪        绿 */
     {0, 0, LED_BRIGHT},         /* 1 启动中      蓝 */
-    {LED_BRIGHT, 100, 0},       /* 2 网络未就绪  黄 */
+    {LED_BRIGHT, LED_BRIGHT_Y, 0},   /* 2 网络未就绪  黄 */
     {0, 0, LED_BRIGHT},         /* 3 动作执行中  蓝 */
     {0, LED_BRIGHT, 0},         /* 4 故障        红 */
 };
@@ -276,29 +289,33 @@ static void led_test_task(void *arg)
      * 所以"什么时候抬头看都在循环" —— 一次性 4 秒的窗口太容易错过。
      */
     for (int round = 0; round < 30; round++) {
-        /* 阶段 1:逐颗红 —— 数一数有几颗(每颗亮 300 ms) */
+        /* 阶段 1:逐颗红 —— 数一数有几颗(每颗亮 600 ms,够数) */
         for (int px = 0; px < LED_COUNT; px++) {
             uint8_t grb[LED_COUNT][3] = {{0}};
             grb[px][1] = LED_BRIGHT;          /* 红 = G0 R=Bright B0 */
             ws2812_write_multi(grb, LED_COUNT);
-            vTaskDelay(pdMS_TO_TICKS(300));
+            ESP_LOGI(TAG, "LED test: pixel %d of %d", px + 1, LED_COUNT);
+            vTaskDelay(pdMS_TO_TICKS(600));
         }
-        vTaskDelay(pdMS_TO_TICKS(400));
+        vTaskDelay(pdMS_TO_TICKS(500));
 
-        /* 阶段 2:全体依次 红/绿/蓝/白 —— 若"红"显示成蓝,说明字节序反了 */
+        /* 阶段 2:全体依次 红/绿/蓝/白 —— 若"红"显示成蓝,说明字节序反了。
+         * 每一步都在串口上点名,看灯的人和读日志的人可以对上。 */
         static const uint8_t seq[4][3] = {
             {0, LED_BRIGHT, 0},                    /* 红 */
             {LED_BRIGHT, 0, 0},                    /* 绿 */
             {0, 0, LED_BRIGHT},                    /* 蓝 */
             {LED_BRIGHT, LED_BRIGHT, LED_BRIGHT},   /* 白 */
         };
+        static const char *const names[4] = { "RED", "GREEN", "BLUE", "WHITE" };
         for (int i = 0; i < 4; i++) {
             uint8_t grb[LED_COUNT][3] = {{0}};
             for (int px = 0; px < LED_COUNT; px++) {
                 memcpy(grb[px], seq[i], 3);
             }
             ws2812_write_multi(grb, LED_COUNT);
-            vTaskDelay(pdMS_TO_TICKS(700));
+            ESP_LOGI(TAG, "LED test: all pixels %s", names[i]);
+            vTaskDelay(pdMS_TO_TICKS(1500));
         }
     }
 
