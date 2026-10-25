@@ -109,6 +109,14 @@ def main():
             print("\n(%d frame(s) lost in transit -- UDP is best-effort)" % lost,
                   file=sys.stderr)
         print("\nbye", flush=True)
+    except (ConnectionResetError, ConnectionAbortedError, OSError) as exc:
+        # 设备重启 / WiFi 断开 ⇒ UDP 流断。这是**预期**的
+        # (刷完固件设备会自己重启),不是错误。
+        if lost:
+            print("\n(%d frame(s) lost in transit -- UDP is best-effort)" % lost,
+                  file=sys.stderr)
+        print("\ndevice stream closed (%s) -- the dongle probably rebooted"
+              % exc, flush=True)
     finally:
         sock.close()
         if out:
