@@ -10,6 +10,7 @@
 
 #include <esp_log.h>
 #include <driver/rmt_tx.h>
+#include <driver/rmt_encoder.h>
 
 #include "io_launcher.h"
 #include "io_net.h"
@@ -64,9 +65,11 @@ void io_led_busy_release(void)
 #define LED_T1H             6       /* 750 ns */
 #define LED_T1L             4       /* 500 ns */
 #define LED_RESET_TICKS     400     /* 50 µs 复位(要求 >50 µs) */
-/* 一个像素 = 3 字节 = 24 bit,每 bit 一个 RMT word */
+/* 一个像素 = 3 字节 = 24 bit,每 bit 一个 RMT symbol */
 #define LED_WORDS_PER_PX    24
-#define LED_WORDS_MAX       (LED_COUNT * LED_WORDS_PER_PX + 1)
+/* 末尾 +1 是复位符号。★ mem_block_symbols **必须是偶数**(IDF 的硬要求),
+ *   所以 +2 而不是 +1。 */
+#define LED_WORDS_MAX       (LED_COUNT * LED_WORDS_PER_PX + 2)
 
 /* 刷新节拍与闪烁周期 */
 #define LED_TICK_MS         50
@@ -86,59 +89,91 @@ static const uint8_t s_color[5][3] = {
 };
 
 static rmt_channel_handle_t s_chan;
+static rmt_encoder_handle_t s_enc;
 static int s_last_state = -1;
 static bool s_last_on;
 static bool s_blink_phase;
 
 /* ------------------------------------------------------------------ */
+/* WS2812 编码器                                                        */
+/* ------------------------------------------------------------------ */
 
-static void encode_px(rmt_symbol_word_t *items, size_t *n, const uint8_t *grb)
+/*
+ * ★ IDF 5.5 的 RMT 换了架构 ★
+ *   旧版直接把 `rmt_symbol_word_t` 数组交给 rmt_transmit();5.5 改成
+ *   "encoder + 原始 payload":`rmt_transmit(chan, encoder, payload, bytes, cfg)`,
+ *   由 encoder 的回调把原始数据翻译成 RMT symbol。
+ *   内置的 bytes/simple encoder 表达不了 WS2812(0 位和 1 位的高/低电平宽度
+ *   不一样),所以自己写回调 —— 这也是 IDF 5.5 没带 led_strip 组件的原因。
+ *
+ * payload = 原始 bit 流(每字节 MSB first),一个像素 3 字节 G,R,B。
+ */
+static size_t ws2812_encode_cb(const void *data, size_t data_size,
+                                size_t symbols_written, size_t symbols_free,
+                                rmt_symbol_word_t *symbols, bool *done, void *arg)
 {
-    for (int byte = 0; byte < 3; byte++) {
-        for (int bit = 7; bit >= 0; bit--) {
-            const bool one = (grb[byte] >> bit) & 1;
-            items[*n].level0 = 1;
-            items[*n].duration0 = one ? LED_T1H : LED_T0H;
-            items[*n].level1 = 0;
-            items[*n].duration1 = one ? LED_T1L : LED_T0L;
-            (*n)++;
+    (void)arg;
+    const uint8_t *bits = (const uint8_t *)data;
+    const size_t total_bits = data_size * 8;
+    size_t written = 0;
+
+    while (symbols_written + written < total_bits) {
+        if (written >= symbols_free) {
+            break;              /* 空间不够,等 RMT 腾出空间再调 */
         }
+        const size_t bi = symbols_written + written;
+        const bool one = (bits[bi / 8] >> (7 - (bi % 8))) & 1;
+        symbols[written].level0 = 1;
+        symbols[written].duration0 = one ? LED_T1H : LED_T0H;
+        symbols[written].level1 = 0;
+        symbols[written].duration1 = one ? LED_T1L : LED_T0L;
+        written++;
     }
+
+    /* 末尾补复位符号:DIN 拉低 >50 µs,灯才 latch 这一帧 */
+    if (symbols_written + written == total_bits && written < symbols_free) {
+        symbols[written].level0 = 0;
+        symbols[written].duration0 = LED_RESET_TICKS;
+        symbols[written].level1 = 0;
+        symbols[written].duration1 = 0;
+        written++;
+        *done = true;
+    }
+    return written;
 }
 
-static void ws2812_write(const uint8_t *grb)
+static void ws2812_write_multi(const uint8_t (*grb)[3], int count)
 {
-    rmt_symbol_word_t items[LED_WORDS_MAX];
-    size_t n = 0;
+    uint8_t bits[LED_COUNT * 3];
 
     /*
-     * 同一串灯的所有像素必须**在一次事务里连续发完**:
-     * 中间断一下(哪怕是另一个事务)就会被 WS2812 当成复位,latch 出半截数据。
+     * 同一串灯的所有像素必须**连续发完**:WS2812 逐像素 latch,中间断一下
+     * (哪怕是另一个事务)就被当成复位 ⇒ 颜色对不齐。少发一颗 ⇒ 后面的灯珠
+     * 收不到数据、保持旧值。
      */
-    for (int px = 0; px < LED_COUNT; px++) {
-        encode_px(items, &n, grb);
+    for (int i = 0; i < count * 3; i++) {
+        bits[i] = grb[i / 3][i % 3];        /* G,R,B 顺序 */
     }
-    /* 复位:拉低 >50 µs,让灯 latch */
-    items[n].level0 = 0;
-    items[n].duration0 = LED_RESET_TICKS;
-    items[n].level1 = 0;
-    items[n].duration1 = 0;
-    n++;
 
-    rmt_transmit_config_t tx = { .loop_count = -1 };
-    esp_err_t err = rmt_transmit(s_chan, items, n, &tx);
+    rmt_transmit_config_t tx = { .loop_count = 0 };   /* 0 = 只发一次 */
+    const esp_err_t err = rmt_transmit(s_chan, s_enc, bits, (size_t)count * 3, &tx);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "rmt_transmit failed: %s", esp_err_to_name(err));
+        return;
     }
+    /* 等这一帧真的发完(否则下一帧的复位会被吞掉) */
+    rmt_tx_wait_all_done(s_chan, 100);
 }
 
 static void show(int state, bool on)
 {
-    uint8_t grb[3] = {0, 0, 0};
+    uint8_t grb[LED_COUNT][3] = {{0}};
     if (on) {
-        memcpy(grb, s_color[state], sizeof(grb));
+        for (int i = 0; i < LED_COUNT; i++) {
+            memcpy(grb[i], s_color[state], sizeof(grb[i]));
+        }
     }
-    ws2812_write(grb);
+    ws2812_write_multi(grb, LED_COUNT);
 }
 
 static void led_task(void *arg)
@@ -180,24 +215,94 @@ esp_err_t io_led_init(void)
         .mem_block_symbols = LED_WORDS_MAX,
         .trans_queue_depth = 4,
         .intr_priority = 0,
-        .flags = { .invert_out = false, .with_dma = false },
+        .flags = { .invert_out = false, .with_dma = false, .init_level = 0 },
     };
-    const esp_err_t err = rmt_new_tx_channel(&tx, &s_chan);
+    esp_err_t err = rmt_new_tx_channel(&tx, &s_chan);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "rmt_new_tx_channel failed: %s", esp_err_to_name(err));
         s_chan = NULL;
         return err;
     }
-    /* 空闲电平必须是低(WS2812 用低电平复位) */
-    rmt_tx_set_idle_level(s_chan, 0);
+
+    rmt_simple_encoder_config_t enc = {
+        .callback = ws2812_encode_cb,
+        .arg = NULL,
+        .min_chunk_size = 64,
+    };
+    err = rmt_new_simple_encoder(&enc, &s_enc);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "rmt_new_simple_encoder failed: %s", esp_err_to_name(err));
+        rmt_del_channel(s_chan);
+        s_chan = NULL;
+        return err;
+    }
 
     if (xTaskCreate(led_task, "io_led", 3072, NULL, 3, NULL) != pdPASS) {
         ESP_LOGE(TAG, "led task create failed");
+        rmt_del_encoder(s_enc);
         rmt_del_channel(s_chan);
         s_chan = NULL;
         return ESP_ERR_NO_MEM;
     }
     ESP_LOGI(TAG, "WS2812 status LED on GPIO%d (%d px)", LED_GPIO, LED_COUNT);
+    return ESP_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/* 自检:让硬件把"几颗灯珠 / 什么字节序"演出来                            */
+/* ------------------------------------------------------------------ */
+
+static void led_test_task(void *arg)
+{
+    (void)arg;
+    const int saved_state = s_last_state;
+    const bool saved_on = s_last_on;
+
+    /*
+     * 循环跑(默认 30 轮 ≈ 2 分钟):自检是独立 task,UART 控制台照常收命令,
+     * 所以"什么时候抬头看都在循环" —— 一次性 4 秒的窗口太容易错过。
+     */
+    for (int round = 0; round < 30; round++) {
+        /* 阶段 1:逐颗红 —— 数一数有几颗(每颗亮 300 ms) */
+        for (int px = 0; px < LED_COUNT; px++) {
+            uint8_t grb[LED_COUNT][3] = {{0}};
+            grb[px][1] = LED_BRIGHT;          /* 红 = G0 R=Bright B0 */
+            ws2812_write_multi(grb, LED_COUNT);
+            vTaskDelay(pdMS_TO_TICKS(300));
+        }
+        vTaskDelay(pdMS_TO_TICKS(400));
+
+        /* 阶段 2:全体依次 红/绿/蓝/白 —— 若"红"显示成蓝,说明字节序反了 */
+        static const uint8_t seq[4][3] = {
+            {0, LED_BRIGHT, 0},                    /* 红 */
+            {LED_BRIGHT, 0, 0},                    /* 绿 */
+            {0, 0, LED_BRIGHT},                    /* 蓝 */
+            {LED_BRIGHT, LED_BRIGHT, LED_BRIGHT},   /* 白 */
+        };
+        for (int i = 0; i < 4; i++) {
+            uint8_t grb[LED_COUNT][3] = {{0}};
+            for (int px = 0; px < LED_COUNT; px++) {
+                memcpy(grb[px], seq[i], 3);
+            }
+            ws2812_write_multi(grb, LED_COUNT);
+            vTaskDelay(pdMS_TO_TICKS(700));
+        }
+    }
+
+    ESP_LOGI(TAG, "LED self-test done");
+    s_last_state = saved_state;
+    s_last_on = saved_on;
+    vTaskDelete(NULL);
+}
+
+esp_err_t io_led_test(void)
+{
+    if (!s_chan) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (xTaskCreate(led_test_task, "io_ledt", 3072, NULL, 4, NULL) != pdPASS) {
+        return ESP_ERR_NO_MEM;
+    }
     return ESP_OK;
 }
 
@@ -207,6 +312,11 @@ esp_err_t io_led_init(void)
 esp_err_t io_led_init(void)
 {
     return ESP_OK;
+}
+
+esp_err_t io_led_test(void)
+{
+    return ESP_ERR_INVALID_STATE;    /* 没有灯可测 */
 }
 
 #endif  /* CONFIG_SOPHON_LED_WS2812 */

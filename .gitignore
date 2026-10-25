@@ -30,3 +30,7 @@ secrets/
 
 # 归档区:废弃的第三方版本快照,不进仓库
 firmware/.archive/
+
+# 本机 MCP 配置:硬编码了设备的 DHCP 地址,换台机器就没用了
+# (全局配置在 ~/.minimax/mcp.json,那里才是真正生效的地方)
+.mcp.json

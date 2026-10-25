@@ -28,10 +28,16 @@ menu "Sophon hardware"
 
     config SOPHON_LED_COUNT
         int "Number of WS2812 pixels on the bus"
-        default 1
+        default 3
         depends on SOPHON_LED_WS2812
         help
             All pixels of one strip must be driven in a single RMT transaction
             (WS2812 latches per pixel, so a gap in the bit stream resets it).
+
+            **数错灯珠数会"颜色对不齐"**:少发一颗,后面的灯珠就收不到数据,
+            保持旧值。发多了则后面的数据没人收。
+
+            不确定就跑一次 UART 控制台的 `led test`:它会逐颗点亮(数灯珠),
+            再全体依次红/绿/蓝/白(验颜色字节序)。
 
 endmenu

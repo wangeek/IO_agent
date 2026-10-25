@@ -59,6 +59,18 @@ int io_led_state(void);
 void io_led_busy_acquire(void);
 void io_led_busy_release(void);
 
+/**
+ * 跑一次灯自检(约 3 秒),用来确定:
+ *   ① 板子上一共有几颗灯珠(逐颗点亮,数一数)
+ *   ② 颜色字节序对不对(全体依次红/绿/蓝/白,若红显示成蓝就是顺序反了)
+ *
+ * 为什么要这个:灯珠数量和字节序**取决于具体板子**,猜错就"该绿显示红"。
+ * 让硬件自己把答案演出来,一次就能定死,不用反复试错。
+ *
+ * 走 UART0 控制台:`led test`。
+ */
+esp_err_t io_led_test(void);
+
 #ifdef __cplusplus
 }
 #endif

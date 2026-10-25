@@ -12,6 +12,7 @@
 #include <freertos/task.h>
 
 #include "io_disk.h"
+#include "io_led.h"
 #include "io_log.h"
 
 static const char *TAG = "io_cfg";
@@ -447,8 +448,19 @@ static void handle_line(char *line)
      * 主路径是 DEV.CFG 的 `logips=`(与 ssid 一并给用户),这条命令是
      * 应急/热切换通道 —— 开发机 DHCP 换了 IP 之后,不用重贴 U 盘。
      */
-    if (strncmp(line, "log ", 4) == 0) {
-        char *arg = line + 4;
+    if (strcmp(line, "led test") == 0) {
+        /*
+         * 灯自检:逐颗点亮(数灯珠)+ 全体依次红/绿/蓝/白(验颜色字节序)。
+         * 灯珠数和字节序**取决于具体板子**,猜错就"该绿显示红"——
+         * 让硬件自己把答案演出来,一次定死。
+         */
+        const esp_err_t rc = io_led_test();
+        printf("led test: %s\n",
+               (rc == ESP_OK) ? "running (~4s: pixels one by one, then all red/green/blue/white)"
+                              : esp_err_to_name(rc));
+        return;
+    }
+    if (strncmp(line, "log ", 4) == 0) {        char *arg = line + 4;
         char ips[IO_CFG_LOG_IPS_MAX] = {0};
         if (!strcmp(arg, "status")) {
             io_cfg_get_log_ips(ips, sizeof(ips));
@@ -494,7 +506,7 @@ static void console_task(void *arg)
 
     printf("\n=== Sophon console ===\n");
     printf("commands: wifi scan | wifi set <ssid> [pass] | psk set <psk> | name set <n> | "
-           "log ips <ip>[,<ip>] | log off | status\n");
+           "log ips <ip>[,<ip>] | log off | led test | status\n");
     printf("sophon> ");
 
     for (;;) {
