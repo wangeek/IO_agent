@@ -27,6 +27,7 @@
 #include "io_net.h"
 #include "io_log.h"
 #include "io_led.h"
+#include "io_lcd.h"
 #include "io_mcp.h"
 
 static const char *TAG = "sophon";
@@ -161,6 +162,35 @@ static void status_task(void *arg)
     }
 }
 
+/*
+ * 屏:单独一个 task。
+ *
+ * 为什么不在 app_main 里直接调:io_lcd_init() 要等 ST7735S 的复位/唤醒时序
+ * (SWRESET 后 150 ms、SLPOUT 后 500 ms),放在主流程里会把 USB 枚举
+ * 也一起拖住 700 ms —— 枚举越晚,宿主越晚认到设备。
+ */
+static void lcd_task(void *arg)
+{
+    (void)arg;
+    const esp_err_t lrc = io_lcd_init();
+    if (lrc != ESP_OK) {
+        /* 屏起不来不该拖垮设备:它是显示件,不是数据通路 */
+        ESP_LOGW(TAG, "LCD unavailable (%s) -- continuing", esp_err_to_name(lrc));
+        vTaskDelete(NULL);
+        return;
+    }
+    ESP_LOGI(TAG, "LCD ready: %dx%d", io_lcd_width(), io_lcd_height());
+    /*
+     * 开机画一组彩条。
+     *
+     * 屏的**角色**还没定(见 docs/screen-decision.md),而彩条是唯一能一眼
+     * 分清三件事的图案:红蓝有没有反(BGR 位错)、GRAM 偏移对不对(偏移错
+     * 会露出黑边)、旋转对不对(横竖反)。
+     */
+    io_lcd_selftest();
+    vTaskDelete(NULL);
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "========================================");
@@ -179,6 +209,9 @@ void app_main(void)
                      esp_err_to_name(lrc));
         }
     }
+
+    /* 屏:编译期开关 CONFIG_SOPHON_LCD_ST7735 关掉时这里什么都不做 */
+    xTaskCreate(lcd_task, "lcd", 3072, NULL, 3, NULL);
 
     ESP_ERROR_CHECK(io_disk_init());
     ESP_ERROR_CHECK(io_hid_init());

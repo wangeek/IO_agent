@@ -70,3 +70,27 @@ CONFIG_TINYUSB_MSC_ENABLED=n
 # 2026-10-22 临时开到 3:排查"HID IN 端点一直 busy"(报告排了队但主机不取)。
 # 定位完要改回 1 —— 调试字符串会明显撑大固件。
 CONFIG_TINYUSB_DEBUG_LEVEL=1
+
+# ---------------------------------------------------------------------------
+# 量产 dongle(Pocket-Dongle-S3-0.96)板上的 0.96 寸 ST7735S 屏
+#
+# 引脚/偏移/颜色序/背光的出处见 README 决策表「屏幕(2026-10-25)」那一行,
+# 细节见 docs/screen-decision.md。
+#
+# ★ 为什么写在这里而不是 sdkconfig ★
+#   sdkconfig 是**本地文件、被 .gitignore 忽略** —— 只改它,别人 clone 下来
+#   重新生成 sdkconfig 就没有这个开关了(这正是 README 里"kconfig 保留
+#   sdkconfig 已有值、改 default 不生效"那条坑的另一半)。
+#   sdkconfig.defaults 入库 ⇒ 任何机器重新生成 sdkconfig 都得到同一份配置。
+#
+# ★ 屏上显示什么还没定 ★
+#   驱动与角色无关(只负责把像素搬到屏上),所以先落地驱动;
+#   内容层(状态文字 / 目标机画面缩略图 / agent 回显)等决策定了再叠。
+# ---------------------------------------------------------------------------
+CONFIG_SOPHON_LCD_ST7735=y
+CONFIG_SOPHON_LCD_GPIO_SCLK=10
+CONFIG_SOPHON_LCD_GPIO_MOSI=11
+CONFIG_SOPHON_LCD_GPIO_CS=12
+CONFIG_SOPHON_LCD_GPIO_DC=13
+CONFIG_SOPHON_LCD_GPIO_RST=14
+CONFIG_SOPHON_LCD_ROTATION=1
