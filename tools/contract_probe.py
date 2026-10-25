@@ -23,6 +23,9 @@ The contract this checks:
   N15 a tool result carries structuredContent
   N16 a failing tool result carries isError:true
       (the old contract only set it on some tools)
+  N19 every "type" in every input/output schema is a legal JSON Schema type
+      (a human sentence in "type" makes strict MCP endpoints reject the whole
+      request -- deterministically, every turn, forever)
 
 Every check is read-only: no tool that injects into the target machine is
 called with an action that touches anything. "input" is only called with
@@ -209,6 +212,34 @@ def main():
     check("N3a", "every tool has a title", missing_title, [])
     missing_schema = [n for n, t in zip(names, tools) if not t.get("outputSchema")]
     check("N3b", "every tool has an outputSchema", missing_schema, [])
+
+    # ---- N19: every "type" in every schema must be a legal JSON Schema type ----
+    # 2026-10-25: the input tool's `modifiers` was declared as
+    #   {"type": "array of ctrl/shift/alt/win"}   <- a human sentence, not a type
+    # Strict MCP endpoints (the zhipu Anthropic-compatible layer) validate the
+    # whole schema and reject the ENTIRE request on an unknown type. It is a
+    # deterministic parameter error, not a transient failure: the failed turn
+    # is not recorded, the tool catalogue is rebuilt unchanged, so every
+    # following turn re-sends the same broken schema and fails again. One
+    # illegal type in one tool takes the whole session down.
+    JSON_TYPES = {"string", "number", "integer", "boolean", "array", "object", "null"}
+    illegal = []
+
+    def scan_type(node, path):
+        if isinstance(node, dict):
+            tv = node.get("type")
+            if isinstance(tv, str) and tv not in JSON_TYPES:
+                illegal.append("%s: type=%r" % (path, tv))
+            for k, v in node.items():
+                scan_type(v, "%s.%s" % (path, k))
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                scan_type(v, "%s[%d]" % (path, i))
+
+    for t in tools:
+        scan_type(t.get("inputSchema", {}), "inputSchema of '%s'" % t.get("name"))
+        scan_type(t.get("outputSchema", {}), "outputSchema of '%s'" % t.get("name"))
+    check("N19", "every schema 'type' is a legal JSON Schema type", illegal, [])
 
     # ---- N4: unknown tool -> -32602 ----
     st, env = call_tool(ip, port, "definitely_not_a_tool")

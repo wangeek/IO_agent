@@ -1144,10 +1144,26 @@ static io_tool_out_t tool_flash(const cJSON *args)
 /* tools/list                                                           */
 /* ------------------------------------------------------------------ */
 
-static cJSON *tool_schema_obj(const char *type)
+/*
+ * 数组型参数(元素是 string)。
+ *
+ * ★ 这个 helper 存在的意义是"别再把描述塞进 type" ★
+ *   之前这里是个 `tool_schema_obj(const char *type)`:参数名叫 type,调用处
+ *   却传了人话("array of ctrl/shift/alt/win")⇒ 生成的 JSON Schema 非法。
+ *   严格一点的 MCP 端点(zhipu 的 Anthropic 兼容层)会**校验整个 schema**,
+ *   遇到非法 type 直接**拒掉整个请求**。而这是**确定性**参数错误、不是瞬时
+ *   故障:失败轮次不写 messages.jsonl、工具目录每轮原样重建 ⇒ 下一轮重发的
+ *   还是同一个坏 schema ⇒ 每一轮都必挂,永远恢复不了。
+ *   ⇒ 现在 helper 只认"类型",描述单独一个参数,类型由 helper 自己填。
+ */
+static cJSON *tool_schema_array_str(const char *desc)
 {
     cJSON *s = cJSON_CreateObject();
-    cJSON_AddStringToObject(s, "type", type);
+    cJSON_AddStringToObject(s, "type", "array");
+    cJSON *items = cJSON_CreateObject();
+    cJSON_AddStringToObject(items, "type", "string");
+    cJSON_AddItemToObject(s, "items", items);
+    cJSON_AddStringToObject(s, "description", desc);
     return s;
 }
 
@@ -1275,7 +1291,8 @@ static cJSON *build_tools_list(void)
             "type | tap | hotkey | move | click | scroll | macro"));
         cJSON_AddItemToObject(p, "text", tool_schema_str("text to type (action=type)"));
         cJSON_AddItemToObject(p, "key", tool_schema_str("single character key (action=tap/hotkey)"));
-        cJSON_AddItemToObject(p, "modifiers", tool_schema_obj("array of ctrl/shift/alt/win"));
+        cJSON_AddItemToObject(p, "modifiers", tool_schema_array_str(
+            "modifier keys to hold: ctrl | shift | alt | win (e.g. [\"ctrl\",\"shift\"])"));
         cJSON_AddItemToObject(p, "dx", tool_schema_num("mouse dx (action=move)"));
         cJSON_AddItemToObject(p, "dy", tool_schema_num("mouse dy (action=move/scroll)"));
         cJSON_AddItemToObject(p, "button", tool_schema_str("left|right|middle (action=click)"));
