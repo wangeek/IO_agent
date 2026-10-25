@@ -122,7 +122,7 @@
 ### 内容层(C 最小版,已落地)
 
 - **点阵字库**:`firmware/io_lcd/font_glcd5x7.c`(95 个可打印 ASCII,475 字节)
-- **MCP 工具 `screen { text }`**:agent 把一段 ASCII 推到屏上。
+- **MCP 工具 `draw { text }`**:agent 把一段 ASCII 推到屏上。
   这是设备第一次能收"自由文本"——原来它只能回状态码(int)。
   实测:契约探针 **28/28** 全过,`{"ok":true,"lines":3}`
 - 屏朝向人 ⇒ 它的用途是"**站在目标机前面的人,不用看聊天就知道 agent 在干什么**"

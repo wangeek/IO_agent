@@ -1150,7 +1150,7 @@ static io_tool_out_t tool_flash(const cJSON *args)
 }
 
 /*
- * screen —— 把一段文字写到 dongle 自己那块 0.96 寸小屏上。
+ * draw —— 把一段文字写到 dongle 自己那块 0.96 寸小屏上。
  *
  * 为什么需要这个工具:设备原来**只能回状态码(int)**,回不了"一句话"。
  * 而"agent 侧回显"(屏的角色 C)要的就是自由文本下行通道 ——
@@ -1160,7 +1160,7 @@ static io_tool_out_t tool_flash(const cJSON *args)
  * 屏是只写的 + 背光常亮,所以"显示"= 往画布上画 + 推一次,
  * 20 ms 内完成 ⇒ 内联做,不走 worker task(那套是给"注入"这种长动作用的)。
  */
-static io_tool_out_t tool_screen(const cJSON *args)
+static io_tool_out_t tool_draw(const cJSON *args)
 {
     cJSON *o = cJSON_CreateObject();
 
@@ -1399,7 +1399,7 @@ static cJSON *build_tools_list(void)
         cJSON *p = cJSON_CreateObject();
         cJSON_AddItemToObject(p, "text", tool_schema_str(
             "text to show on the device's own 0.96\" screen (ASCII only, no Chinese)"));
-        cJSON *t = add_tool(tools, "screen", "Show text on the device's own small screen",
+        cJSON *t = add_tool(tools, "draw", "Show text on the device's own small display",
                             "Write text to the 0.96\" ST7735S screen that is built into this "
                             "dongle. This is the agent's downlink channel to the display: "
                             "the person standing at the target machine can see what the "
@@ -1743,8 +1743,8 @@ static cJSON *dispatch_rpc(const cJSON *req)
             out = tool_update(targs);
         } else if (!strcmp(n, "flash")) {
             out = tool_flash(targs);
-        } else if (!strcmp(n, "screen")) {
-            out = tool_screen(targs);
+        } else if (!strcmp(n, "draw")) {
+            out = tool_draw(targs);
         } else {
             /*
              * 未知工具是**协议错误**(规范:未知工具用 JSON-RPC error,

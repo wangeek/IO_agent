@@ -4,7 +4,7 @@
 The contract this checks:
 
   N1  tools/list returns exactly the eight verb tools
-      (status / ls / read / capture / input / update / flash / screen)
+      (status / ls / read / capture / input / update / flash / draw)
   N2  no old tool name survives in the list
   N3  every tool has a title and an outputSchema
   N4  unknown tool                                  -> JSON-RPC error -32602
@@ -55,7 +55,7 @@ OLD_TOOL_NAMES = [
 ]
 
 NEW_TOOL_NAMES = ["status", "ls", "read", "capture", "input", "update", "flash",
-                  "screen"]
+                  "draw"]
 
 
 def raw_post(ip, port, path, body, headers, host=None):

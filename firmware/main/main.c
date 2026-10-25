@@ -199,9 +199,43 @@ static void lcd_task(void *arg)
     }
     {
         const char *ip = io_net_ip();
-        char buf[96];
-        snprintf(buf, sizeof(buf), "SOPHON\nIP %s", ip ? ip : "--");
-        io_lcd_print(buf, IO_LCD_WHITE, IO_LCD_BLACK);
+        char ipbuf[48];
+        snprintf(ipbuf, sizeof(ipbuf), "IP %s", ip ? ip : "--");
+
+        /* 状态码 → 文字(与 README 决策表「LED 语义」同一张表) */
+        static const char *const state_name[] = {
+            "READY", "BOOT", "NO NET", "BUSY", "FAULT"
+        };
+        const int st = io_led_state();
+        const uint16_t state_color = (st == IO_LED_FAULT) ? IO_LCD_RED
+                                         : (st == IO_LED_READY) ? IO_LCD_GREEN
+                                         : IO_LCD_WHITE;
+
+        /*
+         * 常驻信息屏:站在目标机前的人能直接看见状态、抄走 IP。
+         *
+         * 底部那条彩条是**诊断条**:它让"一次 glance"就能验三件事 ——
+         *   ① 字有没有出来(文字渲染通没通)
+         *   ② 红蓝有没有反(BGR 位对不对)
+         *   ③ 横竖对不对(彩条是竖的还是横的)
+         * 屏是**只写**的(模块没引 MISO,ST7735 连读回都不行)⇒
+         * 设备端**自己没法验证面板有没有真的亮**,只能靠人看一眼。
+         * 等这块屏确认没问题之后,这条彩条可以撤掉。
+         */
+        static const uint16_t swatch[8] = {
+            IO_LCD_RED, IO_LCD_GREEN, IO_LCD_BLUE, IO_LCD_WHITE,
+            IO_LCD_YELLOW, IO_LCD_MAGENTA, IO_LCD_CYAN, IO_LCD_BLACK,
+        };
+
+        io_lcd_clear();
+        io_lcd_text(2, 2, "SOPHON", IO_LCD_WHITE, IO_LCD_BLACK);
+        io_lcd_text(2, 11, ipbuf, IO_LCD_WHITE, IO_LCD_BLACK);
+        io_lcd_text(2, 20, state_name[st >= 0 && st <= IO_LED_FAULT ? st : 0],
+                    state_color, IO_LCD_BLACK);
+        for (int i = 0; i < 8; i++) {
+            io_lcd_fill_rect(i * 20, 72, 20, 8, swatch[i]);
+        }
+        io_lcd_flush();
     }
     vTaskDelete(NULL);
 }

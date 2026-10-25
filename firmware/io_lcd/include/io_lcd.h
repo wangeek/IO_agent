@@ -54,6 +54,9 @@ extern "C" {
 #define IO_LCD_RED     0xF800
 #define IO_LCD_GREEN   0x07E0
 #define IO_LCD_BLUE    0x001F
+#define IO_LCD_YELLOW  0xFFE0
+#define IO_LCD_MAGENTA 0xF81F
+#define IO_LCD_CYAN    0x07FF
 
 /**
  * 初始化屏硬件(SPI 总线 + 复位 + ST7735S 初始化序列 + 设定旋转 + 分配画布)。
@@ -88,6 +91,11 @@ uint16_t *io_lcd_fb(void);
  * 行内字节序在这里换(高字节在前),调用者的画布不动。
  */
 esp_err_t io_lcd_flush(void);
+
+/**
+ * 清空画布(全黑)。**不刷屏** —— 要看到效果还得 io_lcd_flush()。
+ */
+esp_err_t io_lcd_clear(void);
 
 /**
  * 在画布上刷一个矩形(单色)。坐标会被裁到可见区内;越界部分被切掉,不是报错。

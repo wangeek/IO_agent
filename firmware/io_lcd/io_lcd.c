@@ -287,6 +287,15 @@ uint16_t *io_lcd_fb(void)
     return s_fb;
 }
 
+esp_err_t io_lcd_clear(void)
+{
+    if (!s_ready || s_fb == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    memset(s_fb, 0, (size_t)s_width * s_height * 2);
+    return ESP_OK;
+}
+
 esp_err_t io_lcd_fill_rect(int x, int y, int w, int h, uint16_t rgb565)
 {
     if (!s_ready || s_fb == NULL) {
@@ -359,7 +368,7 @@ int io_lcd_print(const char *s, uint16_t fg, uint16_t bg)
         return -1;
     }
     /* 清画布 */
-    memset(s_fb, 0, (size_t)s_width * s_height * 2);
+    io_lcd_clear();
 
     const int cols = s_width / IO_LCD_FONT5X7_CELL_W;
     const int rows = s_height / IO_LCD_FONT5X7_CELL_H;
@@ -414,10 +423,7 @@ esp_err_t io_lcd_flush(void)
 
 esp_err_t io_lcd_blank(void)
 {
-    if (!s_ready || s_fb == NULL) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    memset(s_fb, 0, (size_t)s_width * s_height * 2);
+    ESP_RETURN_ON_ERROR(io_lcd_clear(), TAG, "clear");
     return io_lcd_flush();
 }
 
@@ -546,7 +552,8 @@ int      io_lcd_width(void)                 { return 0; }
 int      io_lcd_height(void)                { return 0; }
 bool     io_lcd_available(void)             { return false; }
 uint16_t *io_lcd_fb(void)                   { return NULL; }
-esp_err_t io_lcd_flush(void)                { return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t io_lcd_flush(void) { return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t io_lcd_clear(void)  { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t io_lcd_fill_rect(int x, int y, int w, int h, uint16_t c)
 { (void)x; (void)y; (void)w; (void)h; (void)c; return ESP_ERR_NOT_SUPPORTED; }
 int      io_lcd_text(int x, int y, const char *s, uint16_t fg, uint16_t bg)
