@@ -209,30 +209,26 @@ static void lcd_task(void *arg)
         const char *state = state_name[(st >= 0 && st <= IO_LED_FAULT) ? st : 0];
 
         /*
-         * 底部那条彩条是**诊断条**:它让"一次 glance"就能验三件事 ——
-         *   ① 字有没有出来(文字渲染通没通)
-         *   ② 红蓝有没有反(BGR 位对不对)
-         *   ③ 横竖对不对(彩条是竖的还是横的)
-         * 屏是**只写**的(模块没引 MISO,ST7735 连读回都不行)⇒
-         * 设备端**自己没法验证面板有没有真的亮**,只能靠人看一眼。
-         * 等这块屏确认没问题之后,这条彩条可以撤掉。
+         * 常驻信息屏,按"四色锁死"主题排(2026-10-26 用户定):
+         *   底 #E2E4E6 / 面板 #F4F5F6 / 正文 #222427 / 强调 #FF622E
+         * 左边一条橘色"书脊" + SOPHON 大字(2x,橘色)做标题,
+         * IP 和状态用炭黑 —— 站在目标机前的人一眼抄走 IP。
+         * (诊断彩条已撤:颜色顺序已经人眼确认过是对的。)
          */
-        static const uint16_t swatch[8] = {
-            IO_LCD_RED, IO_LCD_GREEN, IO_LCD_BLUE, IO_LCD_WHITE,
-            IO_LCD_YELLOW, IO_LCD_MAGENTA, IO_LCD_CYAN, IO_LCD_BLACK,
-        };
+        char ipbuf[48];
+        snprintf(ipbuf, sizeof(ipbuf), "IP %s", ip ? ip : "--");
 
-        /*
-         * 信息屏用 io_lcd_print 而不是直接画 —— 它会把这段文字**记成"字幕"**,
-         * 以后目标机的缩略图来了,这段会压在图上面重画(不然 caption 两秒
-         * 就被帧刷掉了)。
-         */
-        char info[96];
-        snprintf(info, sizeof(info), "SOPHON\nIP %s %s", ip ? ip : "--", state);
-        io_lcd_print(info, IO_LCD_WHITE, IO_LCD_BLACK);
-        for (int i = 0; i < 8; i++) {
-            io_lcd_fill_rect(i * 20, 72, 20, 8, swatch[i]);
-        }
+        io_lcd_fill_rect(0, 0, io_lcd_width(), io_lcd_height(), IO_LCD_THEME_BG);
+        io_lcd_fill_rect(0, 0, io_lcd_width(), 64, IO_LCD_THEME_PANEL);
+        io_lcd_fill_rect(0, 0, 4, 64, IO_LCD_THEME_ACCENT);
+
+        io_lcd_text_scaled(12, 8, "SOPHON",
+                           IO_LCD_THEME_ACCENT, IO_LCD_THEME_PANEL, 2);
+        io_lcd_fill_rect(12, 28, 74, 2, IO_LCD_THEME_ACCENT);
+        io_lcd_text(12, 38, ipbuf, IO_LCD_THEME_TEXT, IO_LCD_THEME_PANEL);
+        io_lcd_text(12, 52, state,
+                    (st == IO_LED_FAULT) ? IO_LCD_THEME_ACCENT : IO_LCD_THEME_TEXT,
+                    IO_LCD_THEME_PANEL);
         io_lcd_flush();
 
         /*

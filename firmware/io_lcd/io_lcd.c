@@ -331,12 +331,23 @@ esp_err_t io_lcd_fill_rect(int x, int y, int w, int h, uint16_t rgb565)
 
 int io_lcd_text(int x, int y, const char *s, uint16_t fg, uint16_t bg)
 {
+    return io_lcd_text_scaled(x, y, s, fg, bg, 1);
+}
+
+int io_lcd_text_scaled(int x, int y, const char *s,
+                       uint16_t fg, uint16_t bg, int scale)
+{
     if (!s_ready || s_fb == NULL || s == NULL) {
         return -1;
     }
+    if (scale < 1)  scale = 1;
+    if (scale > 4)  scale = 4;
+
+    const int cell_w = IO_LCD_FONT5X7_CELL_W * scale;
+    const int cell_h = IO_LCD_FONT5X7_CELL_H * scale;
     int drawn = 0;
     for (const char *p = s; *p; p++) {
-        const int cx = x + drawn * IO_LCD_FONT5X7_CELL_W;
+        const int cx = x + drawn * cell_w;
         if (cx >= s_width) {
             break;
         }
@@ -349,22 +360,23 @@ int io_lcd_text(int x, int y, const char *s, uint16_t fg, uint16_t bg)
         /*
          * 字模是**列优先**:g[c] 是一列,它的 bit r 是第 r 行。
          * 所以要按行取位(先定行,再定列),不是按列取位。
+         * 放大 = 一个字模像素铺成 scale x scale 的方块。
          */
-        for (int r = 0; r < IO_LCD_FONT5X7_CELL_H; r++) {
+        for (int r = 0; r < cell_h; r++) {
             const int py = y + r;
             if (py < 0 || py >= s_height) {
                 continue;
             }
             uint16_t *line = s_fb + (size_t)py * s_width;
-            for (int c = 0; c < IO_LCD_FONT5X7_CELL_W; c++) {
+            for (int c = 0; c < cell_w; c++) {
                 const int px = cx + c;
                 if (px < 0 || px >= s_width) {
                     continue;
                 }
                 const bool ink = (g != NULL) &&
-                                 (c < IO_LCD_FONT5X7_W) &&
-                                 (r < IO_LCD_FONT5X7_H) &&
-                                 ((g[c] >> r) & 1);
+                                 (c / scale < IO_LCD_FONT5X7_W) &&
+                                 (r / scale < IO_LCD_FONT5X7_H) &&
+                                 ((g[c / scale] >> (r / scale)) & 1);
                 line[px] = ink ? fg : bg;
             }
         }
@@ -670,6 +682,8 @@ esp_err_t io_lcd_fill_rect(int x, int y, int w, int h, uint16_t c)
 { (void)x; (void)y; (void)w; (void)h; (void)c; return ESP_ERR_NOT_SUPPORTED; }
 int      io_lcd_text(int x, int y, const char *s, uint16_t fg, uint16_t bg)
 { (void)x; (void)y; (void)s; (void)fg; (void)bg; return -1; }
+int      io_lcd_text_scaled(int x, int y, const char *s, uint16_t fg, uint16_t bg, int sc)
+{ (void)x; (void)y; (void)s; (void)fg; (void)bg; (void)sc; return -1; }
 int      io_lcd_print(const char *s, uint16_t fg, uint16_t bg)
 { (void)s; (void)fg; (void)bg; return -1; }
 esp_err_t io_lcd_load_bmp(const uint8_t *d, size_t n)

@@ -58,6 +58,18 @@ extern "C" {
 #define IO_LCD_MAGENTA 0xF81F
 #define IO_LCD_CYAN    0x07FF
 
+/*
+ * 屏幕主题(2026-10-26 用户定,"四色锁死"):
+ *   底    #E2E4E6  哑光浅灰
+ *   面板  #F4F5F6  米灰白
+ *   正文  #222427  炭黑
+ *   强调  #FF622E  亮橘橙(SOPHON 标题等需要醒目的地方)
+ */
+#define IO_LCD_THEME_BG      IO_LCD_RGB565(0xE2, 0xE4, 0xE6)
+#define IO_LCD_THEME_PANEL   IO_LCD_RGB565(0xF4, 0xF5, 0xF6)
+#define IO_LCD_THEME_TEXT    IO_LCD_RGB565(0x22, 0x24, 0x27)
+#define IO_LCD_THEME_ACCENT  IO_LCD_RGB565(0xFF, 0x62, 0x2E)
+
 /**
  * 初始化屏硬件(SPI 总线 + 复位 + ST7735S 初始化序列 + 设定旋转 + 分配画布)。
  *
@@ -121,6 +133,13 @@ esp_err_t io_lcd_load_bmp(const uint8_t *data, size_t len);
  * @return 写进去的列数(截断后)
  */
 int io_lcd_text(int x, int y, const char *s, uint16_t fg, uint16_t bg);
+
+/**
+ * 同 io_lcd_text,但按整数倍放大(像素复制)。
+ * scale=1 等价 io_lcd_text;2 = 标题用的大字。一格变成 6x8 * scale。
+ */
+int io_lcd_text_scaled(int x, int y, const char *s,
+                       uint16_t fg, uint16_t bg, int scale);
 
 /**
  * 清屏 + 画一段文字(自动按屏宽折行,'\n' 强制换行),然后**刷到屏上**。
