@@ -120,13 +120,28 @@ function Get-TempName {
 
 function Write-Atomic {
     <# Write bytes to $Path via a temp file + rename so the device never
-       observes a half-written file. #>
+       observes a half-written file.
+
+       ★ IOException retry ★ transient locks (Explorer thumbnailer, AV
+       scanning a fresh JPG on a removable drive) hold the target for a few
+       hundred ms -- Delete/Move then throws and, without a retry, the
+       watcher "runs two frames and dies" (real-machine lesson 2026-10-26).
+       A lock is NOT "carrier gone": retry, and let the volume-root check in
+       the main loop decide liveness. #>
     param([string] $Path, [byte[]] $Bytes)
     $dir = [System.IO.Path]::GetDirectoryName($Path)
     $tmp = [System.IO.Path]::Combine($dir, (Get-TempName))
-    [System.IO.File]::WriteAllBytes($tmp, $Bytes)
-    if ([System.IO.File]::Exists($Path)) { [System.IO.File]::Delete($Path) }
-    [System.IO.File]::Move($tmp, $Path)
+    for ($attempt = 1; $attempt -le 4; $attempt++) {
+        try {
+            [System.IO.File]::WriteAllBytes($tmp, $Bytes)
+            if ([System.IO.File]::Exists($Path)) { [System.IO.File]::Delete($Path) }
+            [System.IO.File]::Move($tmp, $Path)
+            return
+        } catch [System.IO.IOException] {
+            if ($attempt -eq 4) { throw }
+            Start-Sleep -Milliseconds 150
+        }
+    }
 }
 
 function Get-JpegBytes {
@@ -555,17 +570,14 @@ while ($true) {
             $preview.Dispose()
         }
     } catch {
-        # 写失败**不等于**载波丢了:设备正在读盘(read/capture 会读盘)时,宿主
-        # 这一侧的文件改名/写入可能撞车。载波真丢了(卷目录不见了)才退出;
-        # 否则重试 —— "watcher 跑两帧就没了"就是撞车导致的。
+        # 写失败**不等于**载波丢了:资源管理器缩略图/杀软盯 U 盘新图片时,
+        # 文件改名/写入会连续撞车(真机实证 2026-10-26:一次写失败能连吃
+        # 5 轮,旧的"5 败即退"让 watcher 每次只活几秒)。载波真丢了
+        #(卷目录不见了)才退出;否则记日志、继续跑。
         Write-Log "capture/write failed (iter $iter): $($_.Exception.Message)"
         if (-not [System.IO.Directory]::Exists($driveRoot)) {
             Write-Log 'carrier gone: volume directory vanished'
             exit 4
-        }
-        if ($iter -ge 5) {
-            Write-Log 'giving up after 5 failed iterations'
-            exit 5
         }
         Start-Sleep -Milliseconds 400
         continue
