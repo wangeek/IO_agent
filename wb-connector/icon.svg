@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Sophon: 四色锁死 -->
+  <rect width="128" height="128" rx="26" fill="#E2E4E6"/>
+  <rect x="14" y="14" width="100" height="100" rx="16" fill="#F4F5F6"/>
+
+  <!-- 左：橘色书脊 -->
+  <rect x="26" y="40" width="6" height="48" rx="3" fill="#FF622E"/>
+
+  <!-- 右：一只"眼"（外圈）+ 一个"手"的示意点阵 -->
+  <circle cx="66" cy="56" r="14" fill="none" stroke="#222427" stroke-width="5"/>
+  <circle cx="66" cy="56" r="4.5" fill="#FF622E"/>
+
+  <!-- 下方三点：按键注入的三段节奏 -->
+  <circle cx="58" cy="82" r="3.5" fill="#222427"/>
+  <circle cx="68" cy="82" r="3.5" fill="#222427"/>
+  <circle cx="78" cy="82" r="3.5" fill="#FF622E"/>
+
+  <!-- 右上角信号弧：无线链路 -->
+  <path d="M88 34 q10 8 0 16" fill="none" stroke="#FF622E" stroke-width="4"
+        stroke-linecap="round"/>
+  <path d="M94 28 q18 14 0 28" fill="none" stroke="#FF622E" stroke-width="4"
+        stroke-linecap="round" opacity="0.55"/>
+</svg>

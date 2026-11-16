@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sophon-bridge"
+version = "0.1.0"
+description = "Expose a Sophon ESP32-S3 dongle as a stdio MCP server (mDNS discovery built in)"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "wangeek" }]
+keywords = ["mcp", "sophon", "esp32", "hid", "remote-control", "mdns"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+
+# 只依赖标准库 —— 这是有意的:桥要在别人的机器上跑,不引入任何第三方包,
+# 就不会有版本冲突、也不会因为缺 wheel 而装不上。
+dependencies = []
+
+[project.scripts]
+sophon-bridge = "sophon_bridge:main"
+
+[project.urls]
+Homepage = "https://github.com/wangeek/sophon"
+
+# 显式声明:扁平布局里 setuptools 的自动发现会把 test_bridge.py 也当成顶层模块,
+# 直接报 "Multiple top-level modules discovered"。只发布桥本体,测试脚本不打包。
+[tool.setuptools]
+py-modules = ["sophon_bridge"]

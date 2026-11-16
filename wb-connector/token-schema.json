@@ -1,0 +1,24 @@
+{
+  "fields": [
+    {
+      "key": "SOPHON_NAME",
+      "label": "设备名（dongle 的 mDNS 名字）",
+      "label_en": "Device name (the dongle's mDNS name)",
+      "type": "text",
+      "required": true,
+      "default": "sophon-dongle",
+      "placeholder": "sophon-dongle",
+      "description": "插上 dongle 后它在局域网里广播的名字。默认 sophon-dongle，出厂就是这个；改过名的话填你自己设的那个。",
+      "description_en": "The name the dongle broadcasts on your LAN. Factory default is sophon-dongle."
+    },
+    {
+      "key": "SOPHON_PSK",
+      "label": "设备密钥（可留空）",
+      "label_en": "Device key (optional)",
+      "type": "password",
+      "required": false,
+      "description": "可选。当前固件尚未强制校验，留空即可；固件支持后会用它做设备侧鉴权。",
+      "description_en": "Optional. The current firmware does not enforce it yet; leave blank."
+    }
+  ]
+}

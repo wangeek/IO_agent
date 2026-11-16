@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "sophon": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "sophon_bridge"],
+      "env": {
+        "SOPHON_NAME": "${SOPHON_NAME}",
+        "SOPHON_PSK": "${SOPHON_PSK}"
+      }
+    }
+  }
+}
