@@ -23,7 +23,7 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-BRIDGE = os.path.join(HERE, "sophon_bridge.py")
+BRIDGE = os.path.join(HERE, "sophon_bridge.js")
 
 EXPECTED_TOOLS = ["status", "ls", "read", "capture", "input", "update", "flash",
                   "draw"]
@@ -42,7 +42,7 @@ def check(tag, desc, got, want):
 class Bridge:
     def __init__(self, args):
         self.proc = subprocess.Popen(
-            [sys.executable, "-u", BRIDGE] + args,
+            ["node", BRIDGE] + args,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, text=True, encoding="utf-8")
 

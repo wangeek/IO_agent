@@ -1,0 +1,32 @@
+{
+  "name": "sophon-bridge",
+  "version": "0.2.0",
+  "description": "Expose a Sophon ESP32-S3 dongle as a stdio MCP server (mDNS discovery built in)",
+  "license": "MIT",
+  "author": "网瘾老登干点啥",
+  "keywords": [
+    "mcp",
+    "sophon",
+    "esp32",
+    "hid",
+    "remote-control",
+    "mdns",
+    "workbuddy"
+  ],
+  "bin": {
+    "sophon-bridge": "sophon_bridge.js"
+  },
+  "main": "sophon_bridge.js",
+  "files": [
+    "sophon_bridge.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {},
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wangeek/sophon.git"
+  }
+}

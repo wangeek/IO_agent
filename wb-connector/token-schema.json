@@ -1,14 +1,18 @@
 {
+  "title": "Sophon 设备对接",
+  "title_en": "Sophon device pairing",
+  "description": "填写插着 Sophon 硬件棒的设备名。凭证只保存在本机 ~/.workbuddy 目录下，不上传云端。",
+  "description_en": "Enter the name of the dongle. Credentials are stored locally in ~/.workbuddy only.",
   "fields": [
     {
       "key": "SOPHON_NAME",
-      "label": "设备名（dongle 的 mDNS 名字）",
-      "label_en": "Device name (the dongle's mDNS name)",
+      "label": "设备名",
+      "label_en": "Device name",
       "type": "text",
       "required": true,
-      "default": "sophon-dongle",
+      "defaultValue": "sophon-dongle",
       "placeholder": "sophon-dongle",
-      "description": "插上 dongle 后它在局域网里广播的名字。默认 sophon-dongle，出厂就是这个；改过名的话填你自己设的那个。",
+      "description": "硬件棒在局域网里广播的名字，出厂默认 sophon-dongle。改过名就填你自己设的那个。",
       "description_en": "The name the dongle broadcasts on your LAN. Factory default is sophon-dongle."
     },
     {
@@ -17,8 +21,8 @@
       "label_en": "Device key (optional)",
       "type": "password",
       "required": false,
-      "description": "可选。当前固件尚未强制校验，留空即可；固件支持后会用它做设备侧鉴权。",
-      "description_en": "Optional. The current firmware does not enforce it yet; leave blank."
+      "description": "可选。留空即可使用；固件支持校验后会用到。",
+      "description_en": "Optional. Leave blank for now."
     }
   ]
 }

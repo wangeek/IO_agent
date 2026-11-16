@@ -6,9 +6,10 @@
   "description_zh": "让你的 Agent 长出实体手眼：操作插着 Sophon 硬件棒的机器，并读回它的屏幕画面。",
   "description_en": "Give your agent physical eyes and hands: inject keyboard and mouse into a machine that has the Sophon dongle plugged in, and read back what is on its screen.",
   "source": "sophon",
+  "type": "mcp",
   "auth_mode": "token",
-  "minWorkbuddyVersion": "4.24.0",
-  "version": "0.1.0",
+  "minWorkbuddyVersion": "5.0.0",
+  "version": "0.2.0",
   "author": "网瘾老登干点啥",
   "examples_zh": [
     "看那台机器的屏幕现在是什么",

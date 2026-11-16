@@ -2,12 +2,18 @@
   "mcpServers": {
     "sophon": {
       "type": "stdio",
-      "command": "python",
-      "args": ["-m", "sophon_bridge"],
+      "command": "npx",
+      "args": ["-y", "sophon-bridge@0.2.0"],
+      "runtime": {
+        "type": "node",
+        "version": ">=18.0.0"
+      },
+      "npmRegistry": "https://registry.npmmirror.com",
       "env": {
         "SOPHON_NAME": "${SOPHON_NAME}",
         "SOPHON_PSK": "${SOPHON_PSK}"
-      }
+      },
+      "timeout": 30000
     }
   }
 }
