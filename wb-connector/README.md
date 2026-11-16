@@ -1,6 +1,21 @@
 # WorkBuddy Connector 包 — Sophon
 
+作者：**网瘾老登干点啥**　·　产品：Sophon（AI Agent 的智子）
+
 上架用包。规范依据：[open.workbuddy.cn/docs/connector](https://open.workbuddy.cn/docs/connector)（2026-11 核对）。
+
+## 作者署名放在哪
+
+| 位置 | 字段 | 用户在哪看到 |
+|---|---|---|
+| `connector-meta.json` | `author` | **连接器详情页**（市场里最显眼的位置） |
+| `skills/sophon/SKILL.md` | frontmatter `author` + 文末署名 | Agent 加载技能时；技能详情页 |
+| 本 README | 抬头 | 提交审核的人打开 zip 就能看到 |
+
+**没放在设备小屏上**：那块屏是 160×80 且**没有中文字模**（当初为了省 flash 明确不做中文），
+"网瘾老登干点啥"渲染不出来。要上屏只剩两条路 —— 加这 7 个字的中文点阵
+（7×32 = 224 字节，很快），或者用拉丁化标记。这属于产品形态决策，等你定。
+
 
 ```
 wb-connector/
@@ -30,6 +45,17 @@ wb-connector/
 | 2 | **设备侧鉴权** | 当前固件是明文 HTTP、无鉴权（README 里挂着的 P0/P3/P5）。`token-schema.json` 已经收了 PSK 并作为 `Authorization: Bearer` 发出，但**固件还没校验**。上公开市场前应该补上 |
 | 3 | **审核时长** | 第三方评测明确指出官方 review 流程没有公开文档，排期前需联系运营确认（/docs/contact） |
 | 4 | **注入类工具的市场合规** | 这个连接器能"真的按键操作一台电脑"。开发者公约 2.3/2.8 对功能与权限有要求，提交前值得先问平台：注入类工具是否需要额外的安全说明或限制 |
+
+## 字段与版本的一个硬约束（2026-11 核实后修正）
+
+`name_zh` / `name_en` / `examples_zh` / `examples_en` 都是 **4.24.0** 才有的字段。
+第一版我写了 `minWorkbuddyVersion: 4.23.0`（token 模式的下限）却用了双语字段 ——
+那是**不一致的**：老客户端会拿到读不懂的元信息。现在统一声明 **4.24.0**
+（既满足 token 的 ≥4.23.0，也覆盖双语字段）。`validate.py` 的 C12/C13 就是查这个，
+免得下次改字段忘了改版本。
+
+另外：示例字段名是 `examples_zh` / `examples_en`，**不是**裸 `examples`。
+
 
 ## 关键决策：为什么是 stdio 而不是远程 HTTP
 

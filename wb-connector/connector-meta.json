@@ -1,19 +1,23 @@
 {
   "name": "Sophon",
-  "name_zh": "Sophon 实体手眼",
+  "name_zh": "Sophon",
   "name_en": "Sophon",
-  "description": "Give your agent physical eyes and hands: inject keyboard/mouse into a machine that has the Sophon dongle plugged in, and read back what is on its screen.",
+  "description": "Give your agent physical eyes and hands: inject keyboard and mouse into a machine that has the Sophon dongle plugged in, and read back what is on its screen.",
   "description_zh": "让你的 Agent 长出实体手眼：操作插着 Sophon 硬件棒的机器，并读回它的屏幕画面。",
-  "description_en": "Give your agent physical eyes and hands: inject keyboard/mouse into a machine that has the Sophon dongle plugged in, and read back what is on its screen.",
+  "description_en": "Give your agent physical eyes and hands: inject keyboard and mouse into a machine that has the Sophon dongle plugged in, and read back what is on its screen.",
   "source": "sophon",
   "auth_mode": "token",
-  "minWorkbuddyVersion": "4.23.0",
+  "minWorkbuddyVersion": "4.24.0",
   "version": "0.1.0",
-  "author": "wangeek",
-  "category": "工具",
-  "examples": [
-    "看这台机器的屏幕现在是什么",
+  "author": "网瘾老登干点啥",
+  "examples_zh": [
+    "看那台机器的屏幕现在是什么",
     "在那台电脑上打开记事本，输入一行字",
     "用 Sophon 帮我操作插着硬件棒的机器"
+  ],
+  "examples_en": [
+    "Show me what is on that machine's screen right now",
+    "Open Notepad on the other PC and type a line",
+    "Use Sophon to drive the machine the dongle is plugged into"
   ]
 }

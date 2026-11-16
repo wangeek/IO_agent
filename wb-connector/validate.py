@@ -12,6 +12,9 @@ Checks (from open.workbuddy.cn/docs/connector):
   C8  SKILL.md 合规   frontmatter 有 name + descriptions
   C9  元信息双语      name/name_zh/name_en + description 三件套
   C10 工具名对齐      mcp.json 声明的 server 名与 SKILL.md 里讲的一致(软检查)
+  C11 作者署名        author 已填(平台详情页展示"谁做的")
+  C12 版本一致性      用了 name_zh/examples_zh 等 4.24.0 字段就必须声明 4.24.0
+  C13 示例字段名      示例是 examples_zh/examples_en,不是裸 examples
 
 Usage:
     python wb-connector/validate.py
@@ -98,6 +101,26 @@ def main():
     need = (4, 23) if mode == "token" else (0, 0)
     check("C4", "minWorkbuddyVersion >= 4.23.0 (token 模式)",
           major_minor >= need, ver or "(missing)")
+
+    # ---- C11 作者署名
+    # 平台会把 author 展示在连接器详情页 —— 这是"谁做的"唯一显眼的位置。
+    check("C11", "author 已填", bool(meta.get("author")),
+          meta.get("author") or "(missing)")
+
+    # ---- C12 字段与最低版本一致性
+    # name_zh/name_en 与 examples_zh/examples_en 都是 **4.24.0** 才有的字段。
+    # 用了它们却声明 4.23.0,老客户端会拿到读不懂的元信息 ⇒ 必须一起声明 4.24.0。
+    uses_424 = any(meta.get(k) for k in
+                   ("name_zh", "name_en", "examples_zh", "examples_en"))
+    if uses_424:
+        check("C12", "用了 4.24.0 字段 -> minWorkbuddyVersion >= 4.24.0",
+              major_minor >= (4, 24), ver or "(missing)")
+
+    # ---- C13 示例字段名
+    # 正确名字是 examples_zh / examples_en;写成裸 examples 平台不认。
+    if "examples" in meta:
+        check("C13", "示例应写成 examples_zh/examples_en", False,
+              "发现裸 examples 字段")
 
     # ---- C5 占位符
     fields = set()
