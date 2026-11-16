@@ -211,22 +211,29 @@ static void lcd_task(void *arg)
         /*
          * 常驻信息屏,按"四色锁死"主题排(2026-10-26 用户定):
          *   底 #E2E4E6 / 面板 #F4F5F6 / 正文 #222427 / 强调 #FF622E
-         * 左边一条橘色"书脊" + SOPHON 大字(2x,橘色)做标题,
-         * IP 和状态用炭黑 —— 站在目标机前的人一眼抄走 IP。
-         * (诊断彩条已撤:颜色顺序已经人眼确认过是对的。)
+         *
+         * 排版有**静态**和**动态**两部分:
+         *   · 静态(书脊 / SOPHON / 下划线 / 作者署名)由宿主渲染成位图存进固件
+         *     —— `io_lcd_brand_show()`。中文在这里是**像素不是字模**,固件不带
+         *     中文字库(哑设备原则:只搬运不解读)。
+         *   · 动态(IP / 状态)运行期才知道,由固件用 5x7 字模画。
+         * 两行的坐标用 brand_screen.h 里的常量,**不要手写数字**(改排版只改
+         * tools/gen_brand_screen.py,重新生成即可)。
          */
         char ipbuf[48];
         snprintf(ipbuf, sizeof(ipbuf), "IP %s", ip ? ip : "--");
 
-        io_lcd_fill_rect(0, 0, io_lcd_width(), io_lcd_height(), IO_LCD_THEME_BG);
-        io_lcd_fill_rect(0, 0, io_lcd_width(), 64, IO_LCD_THEME_PANEL);
-        io_lcd_fill_rect(0, 0, 4, 64, IO_LCD_THEME_ACCENT);
+        const esp_err_t brc = io_lcd_brand_show();
+        if (brc != ESP_OK) {
+            /* 位图没画上(分辨率不符/屏没开)时,退回纯色底,至少别留花屏 */
+            ESP_LOGW(TAG, "brand screen not drawn (%s)", esp_err_to_name(brc));
+            io_lcd_fill_rect(0, 0, io_lcd_width(), io_lcd_height(),
+                             IO_LCD_THEME_BG);
+        }
 
-        io_lcd_text_scaled(12, 8, "SOPHON",
-                           IO_LCD_THEME_ACCENT, IO_LCD_THEME_PANEL, 2);
-        io_lcd_fill_rect(12, 28, 74, 2, IO_LCD_THEME_ACCENT);
-        io_lcd_text(12, 38, ipbuf, IO_LCD_THEME_TEXT, IO_LCD_THEME_PANEL);
-        io_lcd_text(12, 52, state,
+        io_lcd_text(IO_LCD_BRAND_TEXT_X, IO_LCD_BRAND_IP_Y, ipbuf,
+                    IO_LCD_THEME_TEXT, IO_LCD_THEME_PANEL);
+        io_lcd_text(IO_LCD_BRAND_TEXT_X, IO_LCD_BRAND_STATE_Y, state,
                     (st == IO_LED_FAULT) ? IO_LCD_THEME_ACCENT : IO_LCD_THEME_TEXT,
                     IO_LCD_THEME_PANEL);
         io_lcd_flush();

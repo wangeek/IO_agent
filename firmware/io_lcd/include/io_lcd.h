@@ -105,6 +105,23 @@ uint16_t *io_lcd_fb(void);
 esp_err_t io_lcd_flush(void);
 
 /**
+ * 把"品牌屏"位图刷进画布(书脊 + SOPHON + 下划线 + 作者署名)。**不刷屏**。
+ *
+ * 位图由 tools/gen_brand_screen.py 在**宿主**渲染好、压成 2bpp 索引色
+ * (160x80 / 4 = 3200 字节),固件只解包 —— 中文是**像素不是字模**,
+ * 固件里没有也不需要中文字库。
+ *
+ * IP 行 / 状态行的位置在位图里是留空的,由调用方接着用 io_lcd_text() 画
+ * (坐标用下面三个常量,别手写数字)。
+ */
+esp_err_t io_lcd_brand_show(void);
+
+/* 品牌屏上留给运行期文字的坐标(与 tools/gen_brand_screen.py 同步) */
+#define IO_LCD_BRAND_TEXT_X     12
+#define IO_LCD_BRAND_IP_Y       36
+#define IO_LCD_BRAND_STATE_Y    50
+
+/**
  * 清空画布(全黑)。**不刷屏** —— 要看到效果还得 io_lcd_flush()。
  */
 esp_err_t io_lcd_clear(void);

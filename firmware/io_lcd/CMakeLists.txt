@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "io_lcd.c" "font_glcd5x7.c"
+    SRCS "io_lcd.c" "font_glcd5x7.c" "brand_screen.c"
     INCLUDE_DIRS "include"
     REQUIRES driver esp_driver_spi
 )

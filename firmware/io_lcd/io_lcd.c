@@ -4,6 +4,7 @@
  */
 #include "io_lcd.h"
 #include "io_lcd_font.h"
+#include "brand_screen.h"
 
 #include <string.h>
 
@@ -304,6 +305,33 @@ esp_err_t io_lcd_clear(void)
         return ESP_ERR_INVALID_STATE;
     }
     memset(s_fb, 0, (size_t)s_width * s_height * 2);
+    return ESP_OK;
+}
+
+esp_err_t io_lcd_brand_show(void)
+{
+    if (!s_ready || s_fb == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* 位图是按横屏 160x80 生成的;分辨率不对就别画(错位比不画更糟) */
+    if (s_width != IO_BRAND_W || s_height != IO_BRAND_H) {
+        ESP_LOGW(TAG, "brand screen is %dx%d but panel is %dx%d -- skipped",
+                 IO_BRAND_W, IO_BRAND_H, s_width, s_height);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    const uint8_t *p = io_brand_pixels;
+    for (int y = 0; y < IO_BRAND_H; y++) {
+        uint16_t *line = s_fb + (size_t)y * s_width;
+        for (int x = 0; x < IO_BRAND_W; x += 4) {
+            const uint8_t b = *p++;
+            /* 每字节 4 个像素,高位在前 */
+            line[x + 0] = io_brand_palette[(b >> 6) & 0x03];
+            line[x + 1] = io_brand_palette[(b >> 4) & 0x03];
+            line[x + 2] = io_brand_palette[(b >> 2) & 0x03];
+            line[x + 3] = io_brand_palette[(b >> 0) & 0x03];
+        }
+    }
     return ESP_OK;
 }
 
@@ -678,6 +706,7 @@ bool     io_lcd_available(void)             { return false; }
 uint16_t *io_lcd_fb(void)                   { return NULL; }
 esp_err_t io_lcd_flush(void) { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t io_lcd_clear(void)  { return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t io_lcd_brand_show(void) { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t io_lcd_fill_rect(int x, int y, int w, int h, uint16_t c)
 { (void)x; (void)y; (void)w; (void)h; (void)c; return ESP_ERR_NOT_SUPPORTED; }
 int      io_lcd_text(int x, int y, const char *s, uint16_t fg, uint16_t bg)
