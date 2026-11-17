@@ -11,7 +11,7 @@
 | `connector-meta.json` | `author` | **连接器详情页**（市场里最显眼的位置） |
 | `skills/sophon/SKILL.md` | frontmatter `author` + 文末署名 | Agent 加载技能时；技能详情页 |
 | 本 README | 抬头 | 提交审核的人打开 zip 就能看到 |
-| **设备小屏** | 品牌屏位图 | 插上 dongle 的人**物理看到** |
+| **设备小屏** | 品牌屏位图 | 插上智子的人**物理看到** |
 
 设备小屏那一条是 2026-11-16 补的，做法见 `docs/screen-decision.md`：
 中文在**宿主**渲染成 2bpp 位图（`tools/gen_brand_screen.py` → `firmware/io_lcd/brand_screen.c`），
@@ -33,9 +33,9 @@ wb-connector/
 
 已就位：
 
-- **传输选型**：`stdio` + 本地桥（`bridge/sophon_bridge.py`）。**不用远程 HTTP**，理由见下。
+- **传输选型**：`stdio` + 本地桥（`bridge/sophon_bridge.js`，Node，零第三方依赖）。**不用远程 HTTP**，理由见下。
 - **token 模式**：`auth_mode: "token"` + `token-schema.json`，占位符走 `env`。
-- **自检**：`python wb-connector/validate.py` → **19/19 通过**。
+- **自检**：`python wb-connector/validate.py` → **22/22 通过**。
 - **桥实测**：`python bridge/test_bridge.py --endpoint http://<ip>:8080/mcp` → **8/8 通过**
   （真机：initialize / tools/list 八个工具 / status / draw / 未知工具 -32602）。
 
@@ -43,7 +43,7 @@ wb-connector/
 
 | # | 事项 | 说明 |
 |---|---|---|
-| 1 | **桥的分发** | `mcp.json` 用的是 `python -m sophon_bridge`，需要先 `pip install sophon-bridge`。包里 `bridge/pyproject.toml` 已备好，但**还没发布到 PyPI**（需要 PyPI 账号 + 你的授权）。另一条路是声明 `mcpServers[].runtime`（官方 4.24.0 变更记录里提到，但没有公开的字段文档）——**这条需要向平台确认**，我不猜 |
+| 1 | ✅ **桥的分发（已解决）** | `mcp.json` 是 `npx -y <tarball URL>`，桥打成 npm tarball 挂在 Release 上（自托管商店 / GitHub / Gitee 任一），**不发 public npm、不用 PyPI**。`mcpServers[].runtime` 声明 `{"type":"node","version":">=18.0.0"}` —— 复核结论：**MCP + stdio 侧只支持 node**（python 只挂在 CLI 方案的 `CliConfig.runtime.type` 上），所以 Python 桥那条路作废 |
 | 2 | **设备侧鉴权** | 当前固件是明文 HTTP、无鉴权（README 里挂着的 P0/P3/P5）。`token-schema.json` 已经收了 PSK 并作为 `Authorization: Bearer` 发出，但**固件还没校验**。上公开市场前应该补上 |
 | 3 | **审核时长** | 第三方评测明确指出官方 review 流程没有公开文档，排期前需联系运营确认（/docs/contact） |
 | 4 | **注入类工具的市场合规** | 这个连接器能"真的按键操作一台电脑"。开发者公约 2.3/2.8 对功能与权限有要求，提交前值得先问平台：注入类工具是否需要额外的安全说明或限制 |
@@ -66,11 +66,12 @@ wb-connector/
 1. **设备 IP 是 DHCP 的** —— 远程 HTTP 的 `url` 要写死地址。`${VAR}` 虽然能出现在
    url 里（官方文档确认，百度地图就是把 AK 拼进 url 的），但让用户去查设备 IP、
    并且每次续租变了还要手动改，体验不可接受。桥内置 mDNS，自动跟上。
-2. **设备在局域网里** —— 远程连接器要求公网可达 / HTTPS，而 dongle 是插在用户
-   自己网里的硬件，不该被要求暴露到公网。
-3. **零安装** —— stdio 由客户端拉起，用户不用装任何东西（除 `pip install`）。
+2. **设备在局域网里** —— 远程连接器要求公网可达 / HTTPS，而智子是插在用户
+   自己网里的设备，不该被要求暴露到公网。
+3. **零安装** —— stdio 由客户端拉起，用户不用装任何东西：桥是 npm tarball，
+   `npx` 直接跑，Node 18+ 由客户端运行时就绪。
 
-**代价**：必须有本机 Python。这是上表第 1 项要解决的事。
+**代价**：本机要有 Node ≥18（MCP 侧 runtime 只能是 node，见上表第 1 项）。
 
 ## token 模式怎么运作（官方口径）
 
@@ -100,13 +101,16 @@ WorkBuddy 桌面端 → 侧边栏「连接器」→「自定义连接器」→�
   "mcpServers": {
     "sophon": {
       "type": "stdio",
-      "command": "python",
-      "args": ["D:\\Lab\\IO_agent\\bridge\\sophon_bridge.py"],
+      "command": "npx",
+      "args": ["-y", "D:\\Lab\\IO_agent\\bridge"],
       "env": { "SOPHON_NAME": "sophon-dongle" }
     }
   }
 }
 ```
+
+注意：桌面端「自定义连接器」**不做 `${VAR}` 替换**（只有市场安装 + 表单那条路才替换），
+所以本地这一份 `SOPHON_NAME` 要写字面值 `sophon-dongle`。
 
 注意三个已知坑（社区实测）：
 

@@ -1,8 +1,8 @@
 {
-  "title": "Sophon 设备对接",
-  "title_en": "Sophon device pairing",
-  "description": "填写插着 Sophon 硬件棒的设备名。凭证只保存在本机 ~/.workbuddy 目录下，不上传云端。",
-  "description_en": "Enter the name of the dongle. Credentials are stored locally in ~/.workbuddy only.",
+  "title": "远控智子 设备对接",
+  "title_en": "Sophon Remote — device pairing",
+  "description": "填写插着远控智子的那台设备的名称。凭证只保存在本机 ~/.workbuddy 目录下，不上传云端。",
+  "description_en": "Enter the name of your Sophon Remote device. Credentials are stored locally in ~/.workbuddy only.",
   "fields": [
     {
       "key": "SOPHON_NAME",
@@ -12,8 +12,8 @@
       "required": true,
       "defaultValue": "sophon-dongle",
       "placeholder": "sophon-dongle",
-      "description": "硬件棒在局域网里广播的名字，出厂默认 sophon-dongle。改过名就填你自己设的那个。",
-      "description_en": "The name the dongle broadcasts on your LAN. Factory default is sophon-dongle."
+      "description": "远控智子在局域网里广播的名字，出厂默认 sophon-dongle；改过名就填你自己设的那个。",
+      "description_en": "The name Sophon Remote broadcasts on your LAN. Factory default is sophon-dongle. Fill in your own if you renamed it."
     },
     {
       "key": "SOPHON_PSK",
