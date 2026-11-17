@@ -363,11 +363,30 @@ function unwrapSse(text) {
 
 // ------------------------------------------------------------------ 主循环
 
+/**
+ * 读取环境变量,把"没被替换的占位符"当成没设置。
+ *
+ * 为什么需要:WorkBuddy 的 `${VAR}` 替换只在**从市场安装、走 token 表单**的
+ * 路径下生效;在桌面端「自定义连接器」里手工粘贴配置时没有表单,也不做替换
+ * ⇒ 桥会收到**字面的** `${SOPHON_NAME}`。踩过:启用连接器直接失败
+ * ("no Sophon device named '${SOPHON_NAME}' found over mDNS")。
+ * 这类值必须退回默认,而不是拿去当设备名。
+ */
+function envOr(key, fallback) {
+  const raw = process.env[key];
+  if (!raw) return fallback;
+  const v = String(raw).trim();
+  if (!v) return fallback;
+  if (v.includes('${') || v.includes('$(')) return fallback;   // 未替换的占位符
+  if (v === 'undefined' || v === 'null') return fallback;
+  return v;
+}
+
 function parseArgs(argv) {
   const out = {
-    endpoint: process.env.SOPHON_ENDPOINT || null,
-    name: process.env.SOPHON_NAME || DEFAULT_NAME,
-    psk: process.env.SOPHON_PSK || null,
+    endpoint: envOr('SOPHON_ENDPOINT', null),
+    name: envOr('SOPHON_NAME', DEFAULT_NAME),
+    psk: envOr('SOPHON_PSK', null),
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];

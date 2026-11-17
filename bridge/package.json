@@ -1,6 +1,6 @@
 {
   "name": "sophon-bridge",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Expose a Sophon ESP32-S3 dongle as a stdio MCP server (mDNS discovery built in)",
   "license": "MIT",
   "author": "网瘾老登干点啥",
