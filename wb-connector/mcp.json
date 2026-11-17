@@ -3,7 +3,7 @@
     "sophon": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "https://dash.18181010.xyz/store/sophon-bridge-0.2.2.tgz"],
+      "args": ["-y", "https://gitee.com/wangeek/IO_agent/releases/download/sophon-bridge-v0.2.3/sophon-bridge-0.2.3.tgz"],
       "runtime": {
         "type": "node",
         "version": ">=18.0.0"
