@@ -1,7 +1,7 @@
 {
   "name": "sophon-bridge",
-  "version": "0.2.2",
-  "description": "Expose a Sophon ESP32-S3 dongle as a stdio MCP server (mDNS discovery built in)",
+  "version": "0.2.3",
+  "description": "远控智子（Sophon Remote）的 stdio 桥：把设备的 MCP(HTTP) 接成 stdio，自带 mDNS 发现",
   "license": "MIT",
   "author": "网瘾老登干点啥",
   "keywords": [
@@ -27,6 +27,6 @@
   "dependencies": {},
   "repository": {
     "type": "git",
-    "url": "https://github.com/wangeek/sophon.git"
+    "url": "https://github.com/wangeek/IO_agent.git"
   }
 }

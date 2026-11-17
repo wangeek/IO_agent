@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * sophon-bridge — 把 Sophon dongle 的 MCP(HTTP)接成 stdio MCP server。
+ * sophon-bridge — 把远控智子（Sophon Remote）的 MCP(HTTP) 接成 stdio MCP server。
  *
  * ★ 为什么是 Node ★
  *   WorkBuddy 的 `mcpServers[].runtime` **只支持 { "type": "node" }**
@@ -14,11 +14,11 @@
  *   设备的 /mcp,把回包原样写回 stdout。设备端契约(工具集 / schema / isError)
  *   永远是唯一真源,桥不会随固件演进漂移(哑设备原则:只搬运,不解读)。
  *
- * 用法
- *   npx sophon-bridge                      # mDNS 发现设备
- *   npx sophon-bridge --name sophon-dongle
- *   npx sophon-bridge --endpoint http://172.17.21.231:8080/mcp
- *   npx sophon-bridge --psk mysecret
+ * 用法(本包**没发公共 npm**,把 tarball 地址交给 npx;本地可用目录)
+ *   npx -y <tarball URL>                   # mDNS 发现设备
+ *   npx -y <tarball URL> --name sophon-dongle
+ *   npx -y <tarball URL> --endpoint http://172.17.21.231:8080/mcp
+ *   npx -y <tarball URL> --psk mysecret
  */
 
 'use strict';
@@ -297,14 +297,14 @@ class Device {
     const now = Date.now();
     if (!force && this.failedAt && now - this.failedAt < FAIL_COOLDOWN_MS) {
       throw new Error(`no Sophon device named '${this.name}' found over mDNS `
-        + '(retrying in a few seconds; is the dongle powered and on the same network?)');
+        + '(retrying in a few seconds; is the device powered and on the same network?)');
     }
 
     const found = await discover(this.name, 6000);
     if (!found) {
       this.failedAt = now;
       throw new Error(`no Sophon device named '${this.name}' found over mDNS `
-        + '(is the dongle powered and on the same network?)');
+        + '(is the device powered and on the same network?)');
     }
     this.resolved = `http://${found.ip}:${found.port}/mcp`;
     this.failedAt = 0;
@@ -449,7 +449,7 @@ async function main() {
   }
   if (args.help) {
     process.stderr.write(
-      'sophon-bridge — expose a Sophon dongle as a stdio MCP server\n'
+      'sophon-bridge — expose Sophon Remote (远控智子) as a stdio MCP server\n'
       + '  --endpoint URL   skip mDNS and use this endpoint\n'
       + '  --name NAME      device name (default sophon-dongle)\n'
       + '  --psk KEY        device key, sent as a Bearer token\n');
