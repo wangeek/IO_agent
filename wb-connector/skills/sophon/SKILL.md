@@ -1,18 +1,18 @@
 ---
 name: sophon
 author: 网瘾老登干点啥
-version: "0.2.0"
+version: "0.3.0"
 descriptions:
   zh-Hans: |
-    操作插着 Sophon 硬件棒的机器：注入键鼠、读回屏幕。当用户想"操作那台电脑"、
-    "看那台机器的屏幕"、"远程点一下"、或提到 dongle / Sophon 时使用。
+    操作插着智子（Sophon）硬件棒的机器：注入键鼠、读回屏幕。当用户想"操作那台电脑"、
+    "看那台机器的屏幕"、"远程点一下"、或提到 dongle / 智子 / 远控智子时使用。
   en: |
     Drive the machine that has the Sophon dongle plugged in: inject keyboard
     and mouse, read back its screen. Use when the user wants to operate, watch
-    or automate "that other machine", or mentions the dongle / Sophon.
+    or automate "that other machine", or mentions the dongle / Sophon / 智子.
 ---
 
-# Sophon — 实体机器的眼与手
+# 远控智子（Sophon）— 实体机器的眼与手
 
 Sophon 是一根 ESP32-S3 硬件棒，插在**目标机**上，同时扮演：
 
@@ -165,5 +165,5 @@ capture    → 拿到画面
 
 ---
 
-作者：**网瘾老登干点啥**　·　产品：Sophon（AI Agent 的智子）
+作者：**网瘾老登干点啥**　·　产品：远控智子（Sophon，AI Agent 的智子）
 遇到问题或想反馈，请直接告诉用户联系作者本人。
