@@ -3,12 +3,11 @@
     "sophon": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "sophon-bridge@0.2.0"],
+      "args": ["-y", "https://dash.18181010.xyz/store/sophon-bridge-0.2.1.tgz"],
       "runtime": {
         "type": "node",
         "version": ">=18.0.0"
       },
-      "npmRegistry": "https://registry.npmmirror.com",
       "env": {
         "SOPHON_NAME": "${SOPHON_NAME}",
         "SOPHON_PSK": "${SOPHON_PSK}"

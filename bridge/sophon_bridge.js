@@ -191,6 +191,13 @@ function discover(name, waitMs) {
     let instance = null;
     const ipByName = new Map();
 
+    // ★ 必须按"服务实例名 + 主机名"过滤,不能见 SRV 就当自己的 ★
+    //   踩过:局域网里另一台 mDNS 设备(192.168.20.2:10443)的 SRV/A 被当成
+    //   Sophon,桥连过去超时 30 秒,而真设备根本没插 —— 症状是"设备没插却报
+    //   了一个陌生地址",极难判断。mDNS 是共享组播,谁都可能在这个组里说话。
+    const wantInstance = `${name}.${service}`.toLowerCase();
+    const wantHost = `${name}.local`.toLowerCase();
+
     const finish = (result) => {
       if (done) return;
       done = true;
@@ -203,19 +210,19 @@ function discover(name, waitMs) {
 
     const onMessage = (msg) => {
       for (const rec of parseRecords(msg)) {
+        const owner = rec.owner.toLowerCase();
         if (rec.type === 1) {
-          ipByName.set(rec.owner.toLowerCase(), rec.value);
+          if (owner === wantHost) ipByName.set(owner, rec.value);
         } else if (rec.type === 33) {
-          srvTarget = rec.value.target;
-          port = rec.value.port;
-          instance = rec.owner;
+          if (owner === wantInstance) {
+            srvTarget = rec.value.target;
+            port = rec.value.port;
+            instance = rec.owner;
+          }
         }
       }
       if (srvTarget && ipByName.has(srvTarget.toLowerCase())) {
         return finish({ ip: ipByName.get(srvTarget.toLowerCase()), port: port || DEFAULT_PORT, instance });
-      }
-      if (port && ipByName.size === 1) {
-        return finish({ ip: [...ipByName.values()][0], port, instance });
       }
     };
 
